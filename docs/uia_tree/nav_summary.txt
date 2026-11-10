@@ -1,0 +1,9 @@
+== top-level children ==
+  GroupControl class='QWidget' name='' rect=(70,12,1252,1092)[1182x1080]
+
+== all mmui::XTab* controls ==
+  depth=5 ButtonControl class='mmui::XTabBarItem' name='微信' enabled=True
+  depth=5 ButtonControl class='mmui::XTabBarItem' name='通讯录' enabled=True
+  depth=5 ButtonControl class='mmui::XTabBarItem' name='收藏' enabled=True
+  depth=5 ButtonControl class='mmui::XTabBarItem' name='发现' enabled=True
+  depth=14 ListControl class='mmui::XTableView' name='会话' enabled=True

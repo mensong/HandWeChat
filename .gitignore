@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+.venv/
+
+data/
+wxauto_logs/
+probe*/
+probe*.png
+screen_*.png
+@AutomationLog.txt
+*.log
+
+docs/*.png
+
+vendor/
