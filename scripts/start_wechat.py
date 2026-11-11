@@ -13,6 +13,11 @@ import subprocess
 import sys
 import time
 from ctypes import wintypes
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from handwechat.version_info import get_process_ids_by_image_name
 
 SPI_GETSCREENREADER = 0x1046
 SPI_SETSCREENREADER = 0x1047
@@ -35,6 +40,18 @@ def set_screen_reader(enable: bool) -> bool:
 
 
 def main() -> int:
+    running_pids = get_process_ids_by_image_name(Path(WEIXIN_PATH).name)
+    if running_pids:
+        print(
+            f"[start_wechat] 微信已在运行（PID: {', '.join(map(str, running_pids))}）；"
+            "不再重复拉起。"
+        )
+        return 0
+
+    if not os.path.exists(WEIXIN_PATH):
+        print(f"[start_wechat] 未找到微信：{WEIXIN_PATH}")
+        return 2
+
     if not get_screen_reader():
         if not set_screen_reader(True):
             print("[start_wechat] 读屏标志设置失败（可能被组策略锁定），微信控件树将不会物化")
@@ -42,10 +59,6 @@ def main() -> int:
         print("[start_wechat] 已开启系统读屏标志")
     else:
         print("[start_wechat] 读屏标志已开启")
-
-    if not os.path.exists(WEIXIN_PATH):
-        print(f"[start_wechat] 未找到微信：{WEIXIN_PATH}")
-        return 2
 
     subprocess.Popen([WEIXIN_PATH])
     print("[start_wechat] 微信已启动；如停在登录界面请完成登录")

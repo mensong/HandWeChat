@@ -4,10 +4,12 @@
 from __future__ import annotations
 
 import ctypes
+from pathlib import Path
 from ctypes import wintypes
 
 
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+MAX_PROCESS_ID_COUNT = 4096
 
 
 class _VS_FIXEDFILEINFO(ctypes.Structure):
@@ -52,6 +54,34 @@ def get_process_path(pid: int) -> str:
         return buf.value
     finally:
         kernel32.CloseHandle(handle)
+
+
+def get_process_ids_by_image_name(image_name: str) -> list[int]:
+    """按映像名枚举进程，用于启动前防重入检查。"""
+
+    kernel32 = ctypes.windll.kernel32
+    psapi = ctypes.windll.psapi
+    size = wintypes.DWORD(MAX_PROCESS_ID_COUNT * ctypes.sizeof(wintypes.DWORD))
+    buffer = ctypes.create_string_buffer(size.value)
+    needed = wintypes.DWORD()
+    if not psapi.EnumProcesses(buffer, size, ctypes.byref(needed)):
+        return []
+
+    count = min(
+        needed.value // ctypes.sizeof(wintypes.DWORD),
+        MAX_PROCESS_ID_COUNT,
+    )
+    pids = ctypes.cast(buffer, ctypes.POINTER(wintypes.DWORD))
+    target = image_name.lower()
+    result: list[int] = []
+    for index in range(count):
+        pid = pids[index]
+        if not pid:
+            continue
+        path = get_process_path(pid)
+        if path and Path(path).name.lower() == target:
+            result.append(pid)
+    return result
 
 
 def get_file_version(path: str) -> str:

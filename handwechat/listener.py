@@ -283,21 +283,28 @@ class MessageListener:
                 keys = [_message_key(msg) for msg in messages]
                 new_messages = self._diff_messages(state, keys, messages)
                 if new_messages is None:
-                    state.anchor_misses += 1
-                    if state.anchor_misses >= 3:
-                        # 连续失配通常说明旧锚点已滚出可读窗口。重建基线比
-                        # 永久跳过更安全；当前窗口里的消息仍不会被误报为新增。
+                    if not _has_key_overlap(state.recent_keys, keys):
+                        # UIA 消息窗口很短；活跃群里的旧锚点可能整段滚出。
+                        # 此时继续计数只会连续报错，直接按新窗口重建基线。
                         state.recent_keys = keys[-self._recent_key_limit :]
                         state.anchor_misses = 0
+                        state.updated_at = _now_text()
                         self._report_error(
                             f"监听 {who!r}",
-                            RuntimeError("连续锚点失配，已重建消息基线"),
+                            RuntimeError("旧锚点已滚出当前消息窗口，已重建基线"),
                         )
                     else:
-                        self._report_error(
-                            f"监听 {who!r}",
-                            RuntimeError("断点锚点不在当前消息窗口内，跳过本轮"),
-                        )
+                        state.anchor_misses += 1
+                        if state.anchor_misses >= 3:
+                            # 部分重叠但顺序对不上时仍短暂等待，避免把同文
+                            # 消息的极端情况误判成全新基线。
+                            state.recent_keys = keys[-self._recent_key_limit :]
+                            state.anchor_misses = 0
+                            state.updated_at = _now_text()
+                            self._report_error(
+                                f"监听 {who!r}",
+                                RuntimeError("消息锚点连续失配，已重建基线"),
+                            )
                     return []
                 self._assign_seq(state, new_messages)
                 state.anchor_misses = 0
