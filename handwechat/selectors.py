@@ -34,6 +34,8 @@ CHAT_TITLE_LABEL_ID = (
     "left_content_v_view.left_ui_.big_title_line_h_view."
     "current_chat_name_label"
 )
+CHAT_TITLE_BAR_GROUP_CLASS = "mmui::ChatTitleBarChatRoomView"
+CHAT_TITLE_BAR_FRIEND_CLASS = "mmui::ChatTitleBarChatSingleView"
 
 GROUP_TITLE_RE = re.compile(r"^(.*?)\s*\((\d+)\)\s*$")
 

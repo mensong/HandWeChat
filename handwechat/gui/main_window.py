@@ -207,9 +207,9 @@ class MainWindow(QMainWindow):
         controller.bridge.state_changed.connect(self._on_listener_state_changed)
         controller.bridge.health_event.connect(self._on_health_event)
         controller.bridge.health_changed.connect(self._on_health_changed)
-        controller.send_worker.queue_changed.connect(self._on_queue_changed)
-        controller.send_worker.send_completed.connect(self._on_send_completed)
-        controller.start_send_worker()
+        controller.bridge.queue_changed.connect(self._on_queue_changed)
+        controller.bridge.send_completed.connect(self._on_send_completed)
+        controller.start_send_queue()
         self.controller = controller
         self.status_label.setText(
             f"微信：在线  PID={wx.pid}  HWND={wx.hwnd:#x}"
@@ -367,7 +367,7 @@ class MainWindow(QMainWindow):
         self.config.max_send_per_minute = self.rate_limit_spin.value()
         if self.controller:
             self.controller.listener.SetMyNames(self.config.my_names)
-            self.controller.send_worker.set_rate_limit(self.config.max_send_per_minute)
+            self.controller.send_queue.set_rate_limit(self.config.max_send_per_minute)
         for row in range(self.session_table.rowCount()):
             name = self.session_table.item(row, 0).text()
             if name in self.config.sessions:
@@ -484,7 +484,7 @@ class MainWindow(QMainWindow):
         text = self.input_edit.text().strip()
         if not text:
             return
-        self.controller.send_worker.submit(self._selected_session, text)
+        self.controller.send_queue.submit(self._selected_session, text)
         self.input_edit.clear()
         self._log(f"已入发送队列：{self._selected_session} {text!r}")
 

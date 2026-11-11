@@ -10,6 +10,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Optional
 
+import uiautomation as uia
+
 from handwechat.selfcheck import SelfCheckResult, run_self_check
 
 
@@ -119,13 +121,14 @@ class HealthMonitor:
         return result, version_changed
 
     def _run(self) -> None:
-        while not self._stop_event.is_set():
-            try:
-                self.CheckOnce()
-            except Exception as exc:
-                self._emit("健康监测", f"{type(exc).__name__}: {exc}")
-                self._set_health(False, str(exc))
-            self._stop_event.wait(self._interval)
+        with uia.UIAutomationInitializerInThread():
+            while not self._stop_event.is_set():
+                try:
+                    self.CheckOnce()
+                except Exception as exc:
+                    self._emit("健康监测", f"{type(exc).__name__}: {exc}")
+                    self._set_health(False, str(exc))
+                self._stop_event.wait(self._interval)
 
     def _save_baseline(self, result: SelfCheckResult) -> None:
         payload = {

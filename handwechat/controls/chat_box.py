@@ -112,7 +112,20 @@ class ChatBox:
         return None
 
     def session_type(self) -> Optional[str]:
-        """群标题带成员数（如 `群聊(3)`）；私聊标题不带该形态。"""
+        """优先用标题栏类名判群；旧版标题后缀成员数仅作兜底。"""
+
+        if uia.GroupControl(
+            self._control,
+            ClassName=sel.CHAT_TITLE_BAR_GROUP_CLASS,
+            searchDepth=3,
+        ).Exists(0.5, 0.2):
+            return SessionType.GROUP
+        if uia.GroupControl(
+            self._control,
+            ClassName=sel.CHAT_TITLE_BAR_FRIEND_CLASS,
+            searchDepth=3,
+        ).Exists(0.5, 0.2):
+            return SessionType.FRIEND
 
         name = self.current_chat_name()
         if name and sel.GROUP_TITLE_RE.match(name):
