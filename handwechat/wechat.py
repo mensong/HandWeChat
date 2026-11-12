@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import List, Optional, Sequence
 
 from handwechat.controls.main_wnd import MainWnd, screen_reader_enabled
 from handwechat.controls.search import SearchBox
@@ -192,3 +192,43 @@ class WeChat:
             if chat is None or chat.current_chat_name() != who:
                 return []
             return chat.get_all_messages(my_names=my_names or [])
+
+    def RecoverMessagesFrom(
+        self,
+        who: str,
+        anchor_keys: Sequence[str],
+        *,
+        my_names: Optional[List[str]] = None,
+        timeout: float = 2.0,
+        max_scroll_rounds: int = 12,
+        scroll_wait: float = 0.18,
+        recovery_timeout: float = 2.5,
+    ) -> Optional[List[BaseMessage]]:
+        """向上回看指定会话，尝试找回旧锚点后的完整消息序列。
+
+        返回 None 表示回溯预算内仍无法拼接出连续消息序列；调用方应把这种情况
+        当作缺口暴露出来，而不是把当前窗口静默当作新基线。
+        """
+
+        if not who or not anchor_keys:
+            return None
+        with ui_lock:
+            if not self._wnd.is_alive():
+                raise WeChatOfflineError("微信窗口已失效，请重新附加")
+            self._wnd.show()
+
+            chat = self._wnd.chat_box(1.0)
+            if chat is None or chat.current_chat_name() != who:
+                if self.ChatWith(who, timeout=timeout) is None:
+                    return None
+                chat = self._wnd.chat_box(timeout)
+
+            if chat is None or chat.current_chat_name() != who:
+                return None
+            return chat.read_messages_until_anchor(
+                anchor_keys,
+                my_names=my_names or [],
+                max_scroll_rounds=max_scroll_rounds,
+                scroll_wait=scroll_wait,
+                timeout_seconds=recovery_timeout,
+            )

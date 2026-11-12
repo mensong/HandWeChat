@@ -103,6 +103,9 @@ class MessageListener:
         my_names: Optional[Sequence[str]] = None,
         state_path: str | Path = "data/listener_state.json",
         recent_key_limit: int = 128,
+        anchor_recovery_rounds: int = 12,
+        anchor_recovery_wait: float = 0.18,
+        anchor_recovery_timeout: float = 2.5,
         on_message: Optional[MessageCallback] = None,
         on_error: Optional[ErrorCallback] = None,
     ) -> None:
@@ -111,6 +114,9 @@ class MessageListener:
         self._my_names: Tuple[str, ...] = tuple(my_names or ())
         self._state_path = Path(state_path)
         self._recent_key_limit = max(8, int(recent_key_limit))
+        self._anchor_recovery_rounds = max(0, min(40, int(anchor_recovery_rounds)))
+        self._anchor_recovery_wait = max(0.05, float(anchor_recovery_wait))
+        self._anchor_recovery_timeout = max(0.1, float(anchor_recovery_timeout))
         self._max_sessions = 100
 
         self._state_lock = threading.RLock()
@@ -284,15 +290,57 @@ class MessageListener:
                 new_messages = self._diff_messages(state, keys, messages)
                 if new_messages is None:
                     if not _has_key_overlap(state.recent_keys, keys):
-                        # UIA 消息窗口很短；活跃群里的旧锚点可能整段滚出。
-                        # 此时继续计数只会连续报错，直接按新窗口重建基线。
-                        state.recent_keys = keys[-self._recent_key_limit :]
-                        state.anchor_misses = 0
-                        state.updated_at = _now_text()
-                        self._report_error(
-                            f"监听 {who!r}",
-                            RuntimeError("旧锚点已滚出当前消息窗口，已重建基线"),
+                        def fallback_current_page(reason: str) -> List[BaseMessage]:
+                            fallback_messages = self._wx.GetMessagesFrom(
+                                who,
+                                my_names=list(self._my_names),
+                            )
+                            fallback_keys = [
+                                _message_key(msg) for msg in fallback_messages
+                            ]
+                            state.recent_keys = fallback_keys[
+                                -self._recent_key_limit :
+                            ]
+                            state.anchor_misses = 0
+                            state.updated_at = _now_text()
+                            self._assign_seq(state, fallback_messages)
+                            self._report_error(
+                                f"监听 {who!r}",
+                                RuntimeError(reason),
+                            )
+                            return fallback_messages
+
+                        recovered_messages: Optional[List[BaseMessage]] = None
+                        if self._anchor_recovery_rounds:
+                            recovered_messages = self._wx.RecoverMessagesFrom(
+                                who,
+                                anchor_keys=state.recent_keys,
+                                my_names=list(self._my_names),
+                                max_scroll_rounds=self._anchor_recovery_rounds,
+                                scroll_wait=self._anchor_recovery_wait,
+                                recovery_timeout=self._anchor_recovery_timeout,
+                            )
+
+                        if recovered_messages is None:
+                            # UIA 消息窗口很短；活跃群里的旧锚点可能整段滚出。
+                            # 回溯失败时不静默重建；当前页消息也要计入并回调。
+                            return fallback_current_page(
+                                "旧锚点已滚出当前消息窗口，回溯恢复失败；"
+                                "已回放当前页并重建基线，本轮可能存在消息缺口"
+                            )
+
+                        recovered_keys = [
+                            _message_key(msg) for msg in recovered_messages
+                        ]
+                        new_messages = self._diff_messages(
+                            state, recovered_keys, recovered_messages
                         )
+                        if new_messages is None:
+                            return fallback_current_page(
+                                "回溯消息仍无法匹配旧锚点；"
+                                "已回放当前页并重建基线，本轮可能存在消息缺口"
+                            )
+                        keys = recovered_keys
                     else:
                         state.anchor_misses += 1
                         if state.anchor_misses >= 3:
@@ -305,7 +353,7 @@ class MessageListener:
                                 f"监听 {who!r}",
                                 RuntimeError("消息锚点连续失配，已重建基线"),
                             )
-                    return []
+                        return []
                 self._assign_seq(state, new_messages)
                 state.anchor_misses = 0
                 state.recent_keys = keys[-self._recent_key_limit :]

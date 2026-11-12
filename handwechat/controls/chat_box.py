@@ -27,6 +27,38 @@ _TIME_RE = re.compile(
     r"(?:星期[一二三四五六日天]|\d{1,2}[:：]\d{2}|\d{4}[-/年]|\d{1,2}月\d{1,2}日)"
 )
 _ME_RE = re.compile(r"@([^\s@：:，,。]+)")
+MAX_ANCHOR_SCROLL_ROUNDS = 12
+ANCHOR_SCROLL_WAIT = 0.18
+ANCHOR_RECOVERY_TIMEOUT = 2.5
+BOTTOM_SCROLL_WAIT = 0.18
+
+
+def _message_key(msg: BaseMessage) -> str:
+    """与监听器保持同一把内容锚点键。"""
+
+    return "\x1f".join((msg.type, msg.attr, msg.content))
+
+
+def _find_suffix(keys: list[str], suffix: list[str]) -> tuple[int, int]:
+    """返回 suffix 在 keys 中最早出现的起点和匹配长度。"""
+
+    max_length = min(len(keys), len(suffix))
+    for length in range(max_length, 0, -1):
+        pattern = suffix[-length:]
+        for start in range(0, len(keys) - length + 1):
+            if keys[start : start + length] == pattern:
+                return start, length
+    return -1, 0
+
+
+def _stitch_overlap(older_keys: list[str], newer_keys: list[str]) -> int:
+    """返回 older 后缀与 newer 前缀的最长重叠长度。"""
+
+    max_length = min(len(older_keys), len(newer_keys))
+    for length in range(max_length, 0, -1):
+        if older_keys[-length:] == newer_keys[:length]:
+            return length
+    return 0
 
 
 class ChatBox:
@@ -181,6 +213,104 @@ class ChatBox:
         self._mark_at_me(messages, my_names)
         self._resolve_group_senders(messages, rect, shot)
         return messages
+
+    def read_messages_until_anchor(
+        self,
+        anchor_keys: Sequence[str],
+        *,
+        my_names: Sequence[str] = (),
+        max_scroll_rounds: int = MAX_ANCHOR_SCROLL_ROUNDS,
+        scroll_wait: float = ANCHOR_SCROLL_WAIT,
+        timeout_seconds: float = ANCHOR_RECOVERY_TIMEOUT,
+    ) -> Optional[list[BaseMessage]]:
+        """向上回看消息窗口，直到重新找到旧锚点并返回锚点后的完整序列。
+
+        UIA 的消息列表是虚拟化的。活跃群在两次轮询间可能把旧锚点挤出一屏。
+        这里用单格滚动保留相邻快照，只有相邻快照存在重叠时才允许拼接，
+        避免把中间不连续的内容误当成完整消息序列。
+        """
+
+        if not anchor_keys:
+            return None
+
+        anchors = list(anchor_keys)
+        my_names = list(my_names)
+        msg_list = self.message_list
+        history = self.get_all_messages(my_names=my_names)
+        history_keys = [_message_key(msg) for msg in history]
+        previous_keys = history_keys
+        found = _find_suffix(history_keys, anchors)[0] >= 0
+        deadline = time.monotonic() + max(0.0, timeout_seconds)
+        stalled_rounds = 0
+
+        try:
+            for _ in range(max(0, max_scroll_rounds)):
+                if found or time.monotonic() >= deadline:
+                    break
+
+                msg_list.WheelUp(wheelTimes=1, waitTime=max(0.02, scroll_wait))
+                older = self.get_all_messages(my_names=my_names)
+                older_keys = [_message_key(msg) for msg in older]
+                if not older or older_keys == previous_keys:
+                    # UIA 的单格滚轮偶尔不产生新快照，多等几轮再放弃。
+                    stalled_rounds += 1
+                    if stalled_rounds >= 3:
+                        break
+                    continue
+
+                overlap = _stitch_overlap(older_keys, history_keys)
+                if overlap == 0:
+                    # 相邻快照不连续时无法安全重建完整顺序，交给调用方暴露缺口。
+                    break
+
+                stalled_rounds = 0
+                history = older[: len(older) - overlap] + history
+                history_keys = [_message_key(msg) for msg in history]
+                found = _find_suffix(history_keys, anchors)[0] >= 0
+                previous_keys = older_keys
+        finally:
+            self._scroll_message_list_to_bottom(msg_list, wait_time=scroll_wait)
+
+        if not found:
+            return None
+
+        # 回溯期间新消息可能已经到达；滚回底部后尝试把最终可见尾部接上。
+        final = self.get_all_messages(my_names=my_names)
+        final_keys = [_message_key(msg) for msg in final]
+        overlap = _stitch_overlap(history_keys, final_keys)
+        if overlap:
+            messages = history + final[overlap:]
+        else:
+            # 尾部不连续时不在本次强行拼接；下一轮会以 history 为锚点继续补齐。
+            messages = history
+        return messages
+
+    def _scroll_message_list_to_bottom(
+        self,
+        msg_list: uia.ListControl,
+        *,
+        wait_time: float = BOTTOM_SCROLL_WAIT,
+    ) -> None:
+        """把虚拟化消息列表滚回底部，保证监听器下一轮仍然从最新消息读起。"""
+
+        for _ in range(MAX_ANCHOR_SCROLL_ROUNDS):
+            before = self._visible_fingerprints(msg_list)
+            if msg_list.SetFocus() and msg_list.IsKeyboardFocusable:
+                # 焦点在消息列表上按 End 是微信当前更稳定的“跳到最新页”方式。
+                msg_list.SendKeys("{END}", interval=0.02, waitTime=max(0.02, wait_time))
+            else:
+                msg_list.WheelDown(wheelTimes=3, waitTime=max(0.02, wait_time))
+            after = self._visible_fingerprints(msg_list)
+            if before == after:
+                break
+
+    @staticmethod
+    def _visible_fingerprints(msg_list: uia.ListControl) -> list[tuple[str, str]]:
+        return [
+            (item.ClassName or "", item.Name or "")
+            for item in msg_list.GetChildren()
+            if isinstance(item, uia.ListItemControl)
+        ]
 
     def _parse_message(
         self,
