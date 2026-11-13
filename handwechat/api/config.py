@@ -22,6 +22,9 @@ class ApiConfig:
     send_task_log_file: str = "send_tasks.log"
     listener_sessions: list[str] = field(default_factory=list)
     my_names: list[str] = field(default_factory=list)
+    ocr_session: str = ""
+    ocr_poll_interval: float = 2.0
+    ocr_max_send_per_minute: int = 20
 
     @classmethod
     def load(cls, path: str | Path) -> "ApiConfig":
@@ -50,6 +53,13 @@ class ApiConfig:
             my_names=[
                 str(name) for name in (data.get("my_names") or []) if str(name)
             ],
+            ocr_session=str(data.get("ocr_session") or ""),
+            ocr_poll_interval=max(
+                0.5, float(data.get("ocr_poll_interval") or 2.0)
+            ),
+            ocr_max_send_per_minute=max(
+                1, int(data.get("ocr_max_send_per_minute") or 20)
+            ),
         )
 
     def to_dict(self) -> dict:

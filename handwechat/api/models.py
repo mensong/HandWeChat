@@ -93,6 +93,35 @@ class SendRequest(BaseModel):
     text: str = Field(min_length=1)
 
 
+class OcrStartRequest(BaseModel):
+    session: str = Field(min_length=1)
+
+
+class OcrSendRequest(BaseModel):
+    text: str = Field(min_length=1)
+
+
+class OcrControlResponse(BaseModel):
+    status: Literal["running", "stopped"]
+    session: str
+
+
+class OcrStatusResponse(BaseModel):
+    running: bool
+    session: str
+    session_type: Optional[Literal["friend", "group"]] = None
+    active_session: str = ""
+    capture_queue_size: int
+    parse_queue_size: int
+    send_queue_size: int
+    poll_interval: float
+    max_send_per_minute: int
+    last_frame_signature: Optional[str] = None
+    last_accepted_signature: Optional[str] = None
+    ocr_skip_identical_count: int = 0
+    last_error: Optional[str] = None
+
+
 class SendTaskQueuedResponse(BaseModel):
     task_id: str
     status: Literal["queued"]

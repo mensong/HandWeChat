@@ -17,6 +17,8 @@ from handwechat.wechat import WeChat
 from handwechat.api.config import ApiConfig
 from handwechat.api.message_buffer import BufferedMessage, MessageBuffer
 from handwechat.api.send_tasks import SendTask, SendTaskStore
+from handwechat.ocr_calibration import OcrCalibration, load_ocr_calibration
+from handwechat.paths import app_data_path
 
 
 REQUIRED_WECHAT_VERSION = "4.2.0.52"
@@ -38,6 +40,14 @@ class SendTaskNotFoundError(HWError):
     """发送任务不存在或已被清理。"""
 
 
+class OcrSessionNotConfiguredError(HWError):
+    """OCR 通道尚未配置监听会话。"""
+
+
+class OcrChannelNotRunningError(HWError):
+    """OCR 通道未启动。"""
+
+
 class ApiService:
     """持有 API 进程内唯一的微信运行时。"""
 
@@ -49,6 +59,7 @@ class ApiService:
         runtime_factory: Callable[..., WeChatRuntime] = WeChatRuntime,
         message_buffer_factory: Callable[..., MessageBuffer] = MessageBuffer,
         send_task_store_factory: Callable[..., SendTaskStore] = SendTaskStore,
+        ocr_channel_factory: Optional[Callable[..., object]] = None,
         baseline_version: str = REQUIRED_WECHAT_VERSION,
     ) -> None:
         self.config = config or ApiConfig()
@@ -56,6 +67,7 @@ class ApiService:
         self._runtime_factory = runtime_factory
         self._message_buffer_factory = message_buffer_factory
         self._send_task_store_factory = send_task_store_factory
+        self._ocr_channel_factory = ocr_channel_factory
         self._baseline_version = baseline_version
         self._wx: Optional[WeChat] = None
         self._runtime: Optional[WeChatRuntime] = None
@@ -66,6 +78,8 @@ class ApiService:
         self.send_tasks = send_task_store_factory(
             self.config.send_task_retention_minutes
         )
+        self._ocr_channel: Optional[object] = None
+        self._ocr_lock = threading.RLock()
 
     @property
     def wx(self) -> Optional[WeChat]:
@@ -245,12 +259,129 @@ class ApiService:
             raise SendTaskNotFoundError(f"发送任务不存在：{task_id!r}")
         return task
 
+    @staticmethod
+    def _load_ocr_calibration() -> OcrCalibration:
+        path = app_data_path("ocr_calibration.json")
+        try:
+            return load_ocr_calibration(path)
+        except (OSError, ValueError) as exc:
+            logging.getLogger(__name__).warning(
+                "OCR 标定文件读取失败，使用默认区域：%s", exc
+            )
+            return OcrCalibration()
+
+    def start_ocr(self, session: Optional[str] = None) -> dict:
+        session_name = (session or self.config.ocr_session).strip()
+        if not session_name:
+            raise OcrSessionNotConfiguredError(
+                "OCR 监听会话未配置：请在 api_config.json 设置 ocr_session，"
+                "或在启动请求中传入 session"
+            )
+
+        with self._ocr_lock:
+            channel = self._ocr_channel
+            if channel is not None and channel.running:
+                if channel.session != session_name:
+                    raise OcrChannelNotRunningError(
+                        "OCR 通道已运行，需先停止当前会话后才能切换"
+                    )
+                return channel.status()
+
+            if channel is not None:
+                channel.stop(timeout=4.0)
+                self._ocr_channel = None
+
+            factory = self._ocr_channel_factory
+            if factory is None:
+                from handwechat.ocr_channel import OcrChannel
+
+                factory = OcrChannel
+
+            calibration = self._load_ocr_calibration()
+            channel = factory(
+                session=session_name,
+                poll_interval=self.config.ocr_poll_interval,
+                max_send_per_minute=self.config.ocr_max_send_per_minute,
+                state_path=app_data_path("ocr_listener_state.json"),
+                input_x_ratio=calibration.input_x_ratio,
+                input_y_ratio=calibration.input_y_ratio,
+                title_box=calibration.title_box,
+                chat_box=calibration.chat_box,
+                list_box=calibration.list_box,
+                on_message=self._on_ocr_message,
+                on_error=self._on_ocr_error,
+                on_send_started=self._on_ocr_send_started,
+                on_send_completed=self._on_ocr_send_completed,
+            )
+            try:
+                channel.start()
+            except Exception:
+                channel.stop(timeout=2.0)
+                self._ocr_channel = None
+                raise
+            self._ocr_channel = channel
+            return channel.status()
+
+    def stop_ocr(self) -> dict:
+        with self._ocr_lock:
+            channel = self._ocr_channel
+            if channel is None:
+                return {"status": "stopped", "session": self.config.ocr_session}
+            session = channel.session
+            channel.stop(timeout=4.0)
+            self._ocr_channel = None
+            return {"status": "stopped", "session": session}
+
+    def get_ocr_status(self) -> dict:
+        with self._ocr_lock:
+            if self._ocr_channel is None:
+                return {
+                    "running": False,
+                    "session": self.config.ocr_session,
+                    "session_type": None,
+                    "active_session": "",
+                    "capture_queue_size": 0,
+                    "parse_queue_size": 0,
+                    "send_queue_size": 0,
+                    "poll_interval": self.config.ocr_poll_interval,
+                    "max_send_per_minute": self.config.ocr_max_send_per_minute,
+                    "last_frame_signature": None,
+                    "last_accepted_signature": None,
+                    "ocr_skip_identical_count": 0,
+                    "last_error": None,
+                }
+            return self._ocr_channel.status()
+
+    def get_ocr_messages(
+        self,
+        cursor: int,
+        *,
+        limit: int = 100,
+        timeout: float = 0.0,
+    ) -> tuple[list[BufferedMessage], int, bool]:
+        return self.message_buffer.get_after(cursor, limit=limit, timeout=timeout)
+
+    def send_ocr(self, text: str) -> SendTask:
+        with self._ocr_lock:
+            channel = self._ocr_channel
+            if channel is None or not channel.running:
+                raise OcrChannelNotRunningError(
+                    "OCR 通道未启动，请先调用 POST /api/v1/ocr/start"
+                )
+            task = self.send_tasks.create(channel.session, text)
+            channel.send(text, task_id=task.task_id)
+            return task
+
     def get_sessions(self) -> list:
         with uia.UIAutomationInitializerInThread():
             wx = self._require_ready()
             return wx.GetSession(self.config.max_sessions)
 
     def shutdown(self) -> None:
+        with self._ocr_lock:
+            if self._ocr_channel is not None:
+                self._ocr_channel.stop(timeout=4.0)
+                self._ocr_channel = None
         with self._attach_lock:
             if self._runtime is not None:
                 self._runtime.shutdown()
@@ -304,6 +435,30 @@ class ApiService:
 
     def _on_runtime_message(self, session: str, message) -> None:
         self.message_buffer.append(session, message, self._listener_session_type(session))
+
+    def _on_ocr_message(self, session: str, message) -> None:
+        session_type = None
+        with self._ocr_lock:
+            if self._ocr_channel is not None:
+                session_type = self._ocr_channel.session_type
+        self.message_buffer.append(session, message, session_type)
+
+    def _on_ocr_error(self, context: str, exc: Exception) -> None:
+        logging.getLogger(__name__).warning(
+            "OCR %s: %s: %s", context, type(exc).__name__, exc
+        )
+
+    def _on_ocr_send_started(self, task_id: str, _text: str) -> None:
+        self._on_send_started(task_id, "", _text)
+
+    def _on_ocr_send_completed(
+        self,
+        task_id: str,
+        text: str,
+        ok: bool,
+        detail: str,
+    ) -> None:
+        self._on_send_task_completed(task_id, "", text, ok, detail)
 
     def _on_runtime_error(self, context: str, exc: Exception) -> None:
         self._last_error = f"{context}: {type(exc).__name__}: {exc}"

@@ -13,3 +13,6 @@ screen_*.png
 docs/*.png
 
 vendor/
+build/
+dist/
+packaging/*.spec

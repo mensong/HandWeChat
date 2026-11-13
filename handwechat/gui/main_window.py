@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
     QComboBox,
+    QDialog,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -32,8 +33,18 @@ from PySide6.QtWidgets import (
 )
 
 from handwechat.gui.config import GuiConfig, SessionConfig
+from handwechat.gui.calibration_dialog import (
+    OcrCalibrationDialog,
+    capture_wechat_screenshot,
+)
 from handwechat.gui.workers import FunctionWorker, WeChatController
 from handwechat.models import BaseMessage, Session
+from handwechat.ocr_calibration import (
+    OcrCalibration,
+    load_ocr_calibration,
+    save_ocr_calibration,
+)
+from handwechat.paths import app_data_path
 
 
 def _now_text() -> str:
@@ -41,7 +52,8 @@ def _now_text() -> str:
 
 
 class MainWindow(QMainWindow):
-    CONFIG_PATH = "data/gui_config.json"
+    CONFIG_PATH = app_data_path("gui_config.json")
+    OCR_CALIBRATION_PATH = app_data_path("ocr_calibration.json")
 
     def __init__(self) -> None:
         super().__init__()
@@ -59,6 +71,7 @@ class MainWindow(QMainWindow):
         self._health_ok = False
         self._listener_running = False
         self._was_running_before_health_failure = False
+        self._ocr_calibrating = False
 
         self._build_ui()
         self._log("界面已启动，正在附加微信")
@@ -156,6 +169,15 @@ class MainWindow(QMainWindow):
             QAbstractItemView.DoubleClicked | QAbstractItemView.SelectedClicked
         )
         layout.addWidget(self.session_table, 1)
+
+        calibration_row = QHBoxLayout()
+        self.calibration_status_label = QLabel()
+        self.calibrate_button = QPushButton("OCR 区域标定")
+        self.calibrate_button.clicked.connect(self._start_ocr_calibration)
+        calibration_row.addWidget(self.calibration_status_label, 1)
+        calibration_row.addWidget(self.calibrate_button)
+        layout.addLayout(calibration_row)
+        self._refresh_ocr_calibration_status()
 
         names_row = QHBoxLayout()
         self.my_names_edit = QLineEdit(page)
@@ -375,6 +397,62 @@ class MainWindow(QMainWindow):
         self.config.save(self.CONFIG_PATH)
         self._refresh_session_list()
         self._log("监听配置已保存")
+
+    def _refresh_ocr_calibration_status(self) -> None:
+        try:
+            calibration = load_ocr_calibration(self.OCR_CALIBRATION_PATH)
+        except (OSError, ValueError) as exc:
+            self.calibration_status_label.setText(
+                f"OCR 标定：读取失败，运行时将使用默认区域（{exc}）"
+            )
+            return
+        if self.OCR_CALIBRATION_PATH.exists():
+            updated_at = calibration.updated_at or "未知时间"
+            self.calibration_status_label.setText(f"OCR 标定：已保存（{updated_at}）")
+        else:
+            self.calibration_status_label.setText("OCR 标定：未标定，使用内置默认区域")
+
+    def _start_ocr_calibration(self) -> None:
+        if self._ocr_calibrating:
+            return
+        self._ocr_calibrating = True
+        self.calibrate_button.setEnabled(False)
+        self._log("正在截取微信主窗口用于 OCR 区域标定")
+        self._run_async(
+            capture_wechat_screenshot,
+            self._on_ocr_calibration_captured,
+            self._on_ocr_calibration_failed,
+        )
+
+    def _on_ocr_calibration_captured(self, image) -> None:
+        try:
+            try:
+                calibration = load_ocr_calibration(self.OCR_CALIBRATION_PATH)
+            except (OSError, ValueError):
+                calibration = OcrCalibration()
+
+            dialog = OcrCalibrationDialog(image, calibration, parent=self)
+            if dialog.exec() == QDialog.DialogCode.Accepted:
+                save_ocr_calibration(
+                    dialog.calibration(),
+                    self.OCR_CALIBRATION_PATH,
+                )
+                self._log(f"OCR 标定已保存：{self.OCR_CALIBRATION_PATH}")
+        except Exception as exc:
+            self._log(
+                f"OCR 标定保存失败：{type(exc).__name__}: {exc}"
+            )
+        finally:
+            self._finish_ocr_calibration()
+
+    def _on_ocr_calibration_failed(self, detail: str) -> None:
+        self._finish_ocr_calibration()
+        self._log(f"OCR 标定失败：{detail}")
+
+    def _finish_ocr_calibration(self) -> None:
+        self._ocr_calibrating = False
+        self.calibrate_button.setEnabled(True)
+        self._refresh_ocr_calibration_status()
 
     def _refresh_session_list(self) -> None:
         if getattr(self, "_refreshing_sessions", False):

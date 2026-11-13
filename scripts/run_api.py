@@ -12,10 +12,12 @@ import uvicorn
 
 from handwechat.api.config import ApiConfig
 from handwechat.api.app import create_app
+from handwechat.paths import app_data_path, app_path
 
 
 def main() -> None:
-    config = ApiConfig.load("data/api_config.json")
+    config = ApiConfig.load(app_data_path("api_config.json"))
+    config.log_dir = str(app_path(config.log_dir))
     app = create_app(config=config)
     uvicorn.run(app, host=config.host, port=config.port)
 

@@ -74,3 +74,111 @@ python setup.py install_deps --offline-dir ./wheels --mirror https://pypi.tuna.t
 ```
 
 上面的命令会被拒绝并提示二者只能选择一个。
+
+## 打包成 exe
+
+构建一个合并的 `--onedir` 目录包和一个微信冷启动器：
+
+```bash
+powershell -ExecutionPolicy Bypass -File packaging\build.ps1 -Target All
+```
+
+只构建合并包：
+
+```bash
+powershell -ExecutionPolicy Bypass -File packaging\build.ps1 -Target Bundle
+```
+
+只构建微信启动器：
+
+```bash
+powershell -ExecutionPolicy Bypass -File packaging\build.ps1 -Target Start
+```
+
+如果已经安装过构建依赖，可以跳过安装步骤：
+
+```bash
+powershell -ExecutionPolicy Bypass -File packaging\build.ps1 -Target All -SkipDependencyInstall
+```
+
+构建产物位于：
+
+```text
+dist\HandWeChat\HandWeChatGui.exe
+dist\HandWeChat\HandWeChatApi.exe
+dist\HandWeChatStart.exe
+```
+
+GUI 和 API 共用 `dist\HandWeChat\data\` 保存配置和日志，也共用同一个 `ocr_calibration.json`。离线 OCR 模型位于 `dist\HandWeChat\_internal\ocr_models\`，并会随程序一起打包。
+
+在新电脑上，必须先运行 `dist\HandWeChatStart.exe` 冷启动微信。它会开启系统读屏标志并自动定位微信安装路径。若微信已经在运行，它不会自动重启微信；此时需要从托盘彻底退出微信，再重新运行启动器。登录完成后再启动并附加 `HandWeChatGui.exe` 或调用 `HandWeChatApi.exe`。
+
+## 纯 OCR 通道
+
+OCR 通道不依赖 UIA 控件树，只监听一个会话，支持接收文本和发送文本。消息读取使用三段流水线：
+
+```text
+截图线程 -> 截图队列(maxsize=8) -> PaddleOCR 线程 -> 解析队列(maxsize=8) -> 消息差异线程
+```
+
+截图完成不会立刻执行 OCR；OCR 慢时会通过有界队列形成背压，避免解析压力打满后继续无节制占用内存。
+
+在 `data\api_config.json` 中配置 OCR 会话：
+
+```json
+{
+  "ocr_session": "文件传输助手",
+  "ocr_poll_interval": 2.0,
+  "ocr_max_send_per_minute": 20
+}
+```
+
+如果是群聊，`ocr_session` 需要包含群名。由于 OCR 通道会从会话列表中搜索会话，建议把目标会话固定在微信会话列表顶部。
+
+启动 API 后使用专用接口：
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/ocr/start `
+  -H "Content-Type: application/json" `
+  -d '{"session":"文件传输助手"}'
+```
+
+如果已经写入 `ocr_session`，也可以不带请求体启动：
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/ocr/start
+```
+
+查询通道状态：
+
+```bash
+curl http://127.0.0.1:8000/api/v1/ocr/status
+```
+
+读取 OCR 新消息：
+
+```bash
+curl http://127.0.0.1:8000/api/v1/ocr/messages?cursor=0&limit=100&timeout=10
+```
+
+发送文本消息：
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/ocr/send `
+  -H "Content-Type: application/json" `
+  -d '{"text":"OCR 通道测试"}'
+```
+
+查询发送结果：
+
+```bash
+curl http://127.0.0.1:8000/api/v1/ocr/send/send_20260112_000001
+```
+
+停止 OCR 通道：
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/ocr/stop
+```
+
+OCR 消息也复用全局 `MessageBuffer` 的自增 `cursor`。`/api/v1/ocr/status` 会分别返回 `capture_queue_size`、`parse_queue_size` 和 `send_queue_size`，并暴露截图去重状态：`last_frame_signature` 是最新截图签名，`last_accepted_signature` 是最近一次成功 OCR 的签名，`ocr_skip_identical_count` 表示已跳过的相同内容帧数。OCR 签名只覆盖标题区和聊天区；窗口移动、输入框变化或会话列表变化不会触发 OCR。首次启动时 PaddleOCR 需要加载 `ocr_models` 离线模型，通常需要等待十几秒。

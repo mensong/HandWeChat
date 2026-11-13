@@ -6,7 +6,6 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 import json
 import logging
-from pathlib import Path
 import time
 
 from fastapi import FastAPI, Query, Request, status
@@ -27,6 +26,10 @@ from handwechat.api.models import (
     ListenerSessionResponse,
     MessageListResponse,
     MessageResponse,
+    OcrControlResponse,
+    OcrSendRequest,
+    OcrStartRequest,
+    OcrStatusResponse,
     SendRequest,
     SessionListResponse,
     SessionResponse,
@@ -36,7 +39,9 @@ from handwechat.api.models import (
 from handwechat.api.service import ApiService
 from handwechat.api.service import ListenerSessionLimitError
 from handwechat.api.service import ListenerSessionNotFoundError
+from handwechat.api.service import OcrChannelNotRunningError
 from handwechat.api.service import SendTaskNotFoundError
+from handwechat.api.service import OcrSessionNotConfiguredError
 from handwechat.api.service import WeChatVersionError
 from handwechat.errors import (
     AttachError,
@@ -44,6 +49,7 @@ from handwechat.errors import (
     HWError,
     WeChatOfflineError,
 )
+from handwechat.paths import app_data_path, app_path, resource_path
 
 
 def _error_code(exc: Exception) -> str:
@@ -61,6 +67,10 @@ def _error_code(exc: Exception) -> str:
         return "LISTENER_SESSION_LIMIT_REACHED"
     if isinstance(exc, SendTaskNotFoundError):
         return "SEND_TASK_NOT_FOUND"
+    if isinstance(exc, OcrSessionNotConfiguredError):
+        return "OCR_SESSION_NOT_CONFIGURED"
+    if isinstance(exc, OcrChannelNotRunningError):
+        return "OCR_CHANNEL_NOT_RUNNING"
     return "INTERNAL_ERROR"
 
 
@@ -118,8 +128,9 @@ def create_app(
     config: ApiConfig | None = None,
     service: ApiService | None = None,
 ) -> FastAPI:
-    config = config or ApiConfig.load(Path("data/api_config.json"))
+    config = config or ApiConfig.load(app_data_path("api_config.json"))
     service = service or ApiService(config)
+    config.log_dir = str(app_path(config.log_dir))
     configure_api_logging(config)
     app = FastAPI(
         title="HandWeChat API",
@@ -130,7 +141,7 @@ def create_app(
     @app.get("/", include_in_schema=False)
     def console() -> FileResponse:
         return FileResponse(
-            Path(__file__).resolve().parent / "static" / "index.html",
+            resource_path("handwechat/api/static/index.html"),
             media_type="text/html",
         )
 
@@ -279,6 +290,55 @@ def create_app(
 
     @app.get("/api/v1/send/{task_id}", response_model=SendTaskResponse)
     def send_task(task_id: str) -> SendTaskResponse:
+        return _send_task_response(service.get_send_task(task_id))
+
+    @app.post("/api/v1/ocr/start", response_model=OcrControlResponse)
+    def start_ocr(request: OcrStartRequest | None = None) -> OcrControlResponse:
+        status_data = service.start_ocr(
+            request.session if request is not None else None
+        )
+        return OcrControlResponse(status="running", session=status_data["session"])
+
+    @app.post("/api/v1/ocr/stop", response_model=OcrControlResponse)
+    def stop_ocr() -> OcrControlResponse:
+        status_data = service.stop_ocr()
+        return OcrControlResponse(
+            status="stopped",
+            session=status_data["session"],
+        )
+
+    @app.get("/api/v1/ocr/status", response_model=OcrStatusResponse)
+    def ocr_status() -> OcrStatusResponse:
+        return OcrStatusResponse.model_validate(service.get_ocr_status())
+
+    @app.get("/api/v1/ocr/messages", response_model=MessageListResponse)
+    def ocr_messages(
+        cursor: int = Query(default=0, ge=0),
+        limit: int = Query(default=100, ge=1, le=100),
+        timeout: int = Query(default=0, ge=0, le=30),
+    ) -> MessageListResponse:
+        items, next_cursor, has_more = service.get_ocr_messages(
+            cursor,
+            limit=limit,
+            timeout=timeout,
+        )
+        return MessageListResponse(
+            items=[_message_response(item) for item in items],
+            next_cursor=next_cursor,
+            has_more=has_more,
+        )
+
+    @app.post(
+        "/api/v1/ocr/send",
+        response_model=SendTaskQueuedResponse,
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    def send_ocr_message(request: OcrSendRequest) -> SendTaskQueuedResponse:
+        task = service.send_ocr(request.text)
+        return SendTaskQueuedResponse(task_id=task.task_id, status="queued")
+
+    @app.get("/api/v1/ocr/send/{task_id}", response_model=SendTaskResponse)
+    def ocr_send_task(task_id: str) -> SendTaskResponse:
         return _send_task_response(service.get_send_task(task_id))
 
     return app

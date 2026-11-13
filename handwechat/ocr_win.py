@@ -12,10 +12,30 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
+from handwechat.paths import ocr_models_dir, resource_path
 
-_SCRIPT_PATH = Path(__file__).with_name("ocr_win.ps1")
+_SCRIPT_PATH = resource_path("handwechat/ocr_win.ps1")
 _paddle_engine = None
 _paddle_lock = Lock()
+
+
+def _offline_model_args() -> dict[str, str] | None:
+    """Return model directories only when the complete offline set exists."""
+
+    root = ocr_models_dir()
+    model_names = ("det", "rec", "cls")
+    model_files = ("inference.pdmodel", "inference.pdiparams")
+    if not all(
+        (root / name / filename).is_file()
+        for name in model_names
+        for filename in model_files
+    ):
+        return None
+    return {
+        "det_model_dir": str(root / "det"),
+        "rec_model_dir": str(root / "rec"),
+        "cls_model_dir": str(root / "cls"),
+    }
 
 
 def recognize_images(images: Mapping[str, Image.Image]) -> dict[str, str]:
@@ -39,7 +59,16 @@ def recognize_images(images: Mapping[str, Image.Image]) -> dict[str, str]:
             except (ImportError, OSError):
                 _paddle_engine = False
             else:
-                _paddle_engine = PaddleOCR(use_angle_cls=False, lang="ch", show_log=False)
+                model_args = _offline_model_args()
+                if model_args is None:
+                    _paddle_engine = False
+                else:
+                    _paddle_engine = PaddleOCR(
+                        use_angle_cls=False,
+                        lang="ch",
+                        show_log=False,
+                        **model_args,
+                    )
         engine = _paddle_engine
 
     if engine is False:
