@@ -7,11 +7,7 @@ class HWError(Exception):
 
 
 class AttachError(HWError):
-    """附加微信主窗口失败（窗口不存在 / 未登录 / 控件树未物化）。"""
-
-
-class ControlNotFoundError(HWError):
-    """关键控件定位失败（通常意味着微信升级改变了控件结构）。"""
+    """附加微信主窗口失败（窗口不存在或未登录）。"""
 
 
 class WeChatOfflineError(HWError):

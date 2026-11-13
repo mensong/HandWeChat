@@ -1,5 +1,5 @@
 ﻿# -*- coding: utf-8 -*-
-"""HTTP API 请求与响应模型。"""
+"""HTTP API request and response models."""
 
 from __future__ import annotations
 
@@ -10,61 +10,26 @@ from pydantic import BaseModel, Field
 
 class AttachResponse(BaseModel):
     status: str
-    wechat_pid: int
+    wechat_pid: Optional[int] = None
     wechat_hwnd: str
 
 
 class HealthResponse(BaseModel):
-    status: Literal["ok", "degraded", "offline"]
+    status: Literal["ok", "offline"]
     wechat_pid: Optional[int] = None
     wechat_hwnd: Optional[str] = None
     wechat_version: str = ""
     online: bool
     listener_running: bool
     send_queue_size: int
-    version_baseline_matched: bool
     attached: bool
-    listener_session_count: int
+    chat_title: str = ""
+    chat_type: Optional[Literal["friend", "group"]] = None
     message_buffer_size: int
     send_task_active: int
     poll_interval: float
     max_send_per_minute: int
     last_error: Optional[str] = None
-
-
-class SessionResponse(BaseModel):
-    name: str
-    type: Optional[Literal["friend", "group"]] = None
-    unread: bool
-    preview: str = ""
-    time: str = ""
-
-
-class SessionListResponse(BaseModel):
-    items: list[SessionResponse] = Field(default_factory=list)
-
-
-class ListenerSessionAddRequest(BaseModel):
-    name: str = Field(min_length=1)
-
-
-class ListenerSessionResponse(BaseModel):
-    name: str
-    type: Optional[Literal["friend", "group"]] = None
-
-
-class ListenerSessionListResponse(BaseModel):
-    items: list[ListenerSessionResponse] = Field(default_factory=list)
-
-
-class ListenerSessionAddResponse(BaseModel):
-    status: str
-    name: str
-
-
-class ListenerSessionRemoveResponse(BaseModel):
-    status: str
-    name: str
 
 
 class ListenerControlResponse(BaseModel):
@@ -74,8 +39,6 @@ class ListenerControlResponse(BaseModel):
 class MessageResponse(BaseModel):
     id: str
     cursor: int
-    session: str
-    session_type: Optional[Literal["friend", "group"]] = None
     sender: str
     content: str
     is_at_me: bool
@@ -89,37 +52,7 @@ class MessageListResponse(BaseModel):
 
 
 class SendRequest(BaseModel):
-    session: str = Field(min_length=1)
     text: str = Field(min_length=1)
-
-
-class OcrStartRequest(BaseModel):
-    session: str = Field(min_length=1)
-
-
-class OcrSendRequest(BaseModel):
-    text: str = Field(min_length=1)
-
-
-class OcrControlResponse(BaseModel):
-    status: Literal["running", "stopped"]
-    session: str
-
-
-class OcrStatusResponse(BaseModel):
-    running: bool
-    session: str
-    session_type: Optional[Literal["friend", "group"]] = None
-    active_session: str = ""
-    capture_queue_size: int
-    parse_queue_size: int
-    send_queue_size: int
-    poll_interval: float
-    max_send_per_minute: int
-    last_frame_signature: Optional[str] = None
-    last_accepted_signature: Optional[str] = None
-    ocr_skip_identical_count: int = 0
-    last_error: Optional[str] = None
 
 
 class SendTaskQueuedResponse(BaseModel):
@@ -130,7 +63,6 @@ class SendTaskQueuedResponse(BaseModel):
 class SendTaskResponse(BaseModel):
     task_id: str
     status: Literal["queued", "running", "success", "failed"]
-    session: str
     text: str
     submitted_at: str
     completed_at: Optional[str] = None

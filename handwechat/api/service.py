@@ -1,47 +1,24 @@
 ﻿# -*- coding: utf-8 -*-
-"""HTTP API 与 WeChatRuntime 之间的服务层。"""
+"""HTTP API service for the current WeChat chat."""
 
 from __future__ import annotations
 
-import threading
 import logging
-import time
+import threading
+import ctypes
+from ctypes import wintypes
 from typing import Callable, Optional
 
-import uiautomation as uia
-
-from handwechat.errors import HWError, WeChatOfflineError
-from handwechat.runtime import WeChatRuntime
-from handwechat.version_info import get_process_version
-from handwechat.wechat import WeChat
 from handwechat.api.config import ApiConfig
 from handwechat.api.message_buffer import BufferedMessage, MessageBuffer
 from handwechat.api.send_tasks import SendTask, SendTaskStore
+from handwechat.errors import HWError, WeChatOfflineError
 from handwechat.ocr_calibration import OcrCalibration, load_ocr_calibration
 from handwechat.paths import app_data_path
 
 
-REQUIRED_WECHAT_VERSION = "4.2.0.52"
-
-
-class WeChatVersionError(HWError):
-    """微信版本偏离当前控件树基线。"""
-
-
-class ListenerSessionNotFoundError(HWError):
-    """监听会话不存在或未启用。"""
-
-
-class ListenerSessionLimitError(HWError):
-    """监听会话数量已达上限。"""
-
-
 class SendTaskNotFoundError(HWError):
     """发送任务不存在或已被清理。"""
-
-
-class OcrSessionNotConfiguredError(HWError):
-    """OCR 通道尚未配置监听会话。"""
 
 
 class OcrChannelNotRunningError(HWError):
@@ -49,190 +26,86 @@ class OcrChannelNotRunningError(HWError):
 
 
 class ApiService:
-    """持有 API 进程内唯一的微信运行时。"""
+    """Own the API process's single current-chat OCR channel."""
 
     def __init__(
         self,
         config: Optional[ApiConfig] = None,
         *,
-        wechat_factory: Callable[..., WeChat] = WeChat,
-        runtime_factory: Callable[..., WeChatRuntime] = WeChatRuntime,
         message_buffer_factory: Callable[..., MessageBuffer] = MessageBuffer,
         send_task_store_factory: Callable[..., SendTaskStore] = SendTaskStore,
         ocr_channel_factory: Optional[Callable[..., object]] = None,
-        baseline_version: str = REQUIRED_WECHAT_VERSION,
     ) -> None:
         self.config = config or ApiConfig()
-        self._wechat_factory = wechat_factory
-        self._runtime_factory = runtime_factory
         self._message_buffer_factory = message_buffer_factory
         self._send_task_store_factory = send_task_store_factory
         self._ocr_channel_factory = ocr_channel_factory
-        self._baseline_version = baseline_version
-        self._wx: Optional[WeChat] = None
-        self._runtime: Optional[WeChatRuntime] = None
-        self._attach_lock = threading.RLock()
-        self._last_error: Optional[str] = None
-        self._last_recovery_at = 0.0
         self.message_buffer = message_buffer_factory(self.config.message_buffer_size)
         self.send_tasks = send_task_store_factory(
             self.config.send_task_retention_minutes
         )
         self._ocr_channel: Optional[object] = None
         self._ocr_lock = threading.RLock()
+        self._last_error: Optional[str] = None
 
     @property
-    def wx(self) -> Optional[WeChat]:
-        return self._wx
-
-    @property
-    def runtime(self) -> Optional[WeChatRuntime]:
-        return self._runtime
+    def ocr_channel(self) -> Optional[object]:
+        with self._ocr_lock:
+            return self._ocr_channel
 
     @property
     def attached(self) -> bool:
-        return self._runtime is not None
+        return self._find_wechat_window() is not None
 
     def health(self) -> dict:
-        wx = self._wx
-        runtime = self._runtime
-        online = bool(wx and wx.IsOnline())
-        if not online and wx is not None:
-            online = self._try_recover()
-            if not online:
-                self._last_error = self._last_error or "微信不在线或控件树不可用"
-        version = ""
-        if online:
-            try:
-                version = get_process_version(wx.pid)
-            except Exception:
-                version = ""
+        located = self._find_wechat_window()
+        online = located is not None
+        hwnd, pid = (None, None)
+        if located is not None:
+            hwnd, pid = located
 
-        baseline_matched = bool(version and version == self._baseline_version)
-        if not online:
-            status = "offline"
-        elif not baseline_matched:
-            status = "degraded"
-            self._last_error = (
-                f"微信版本 {version or '未知'} 与基线 {self._baseline_version} 不匹配"
-            )
-        else:
-            status = "ok"
-            if self._last_error and "版本" in self._last_error:
-                self._last_error = None
+        channel = self.ocr_channel
+        last_error = self._last_error
+        try:
+            if channel is not None and channel.last_error:
+                last_error = channel.last_error
+        except Exception:
+            pass
 
-        listener_session_count = 0
-        if runtime is not None:
-            try:
-                listener_session_count = len(runtime.list_listener_sessions())
-            except Exception:
-                listener_session_count = 0
-
+        listener_running = bool(channel is not None and channel.running)
         return {
-            "status": status,
-            "wechat_pid": wx.pid if online and wx else None,
-            "wechat_hwnd": f"{wx.hwnd:#x}" if online and wx else None,
-            "wechat_version": version,
+            "status": "ok" if online else "offline",
+            "wechat_pid": pid,
+            "wechat_hwnd": f"{hwnd:#x}" if hwnd is not None else None,
+            "wechat_version": "",
             "online": online,
-            "listener_running": bool(
-                online and runtime and runtime.listener_running
-            ),
-            "send_queue_size": runtime.send_queue_size if runtime else 0,
-            "version_baseline_matched": baseline_matched,
-            "attached": runtime is not None,
-            "listener_session_count": listener_session_count,
+            "listener_running": listener_running,
+            "send_queue_size": channel.send_queue.size if channel else 0,
+            "attached": online,
+            "chat_title": channel.chat_title if channel else "",
+            "chat_type": channel.chat_type if channel else None,
             "message_buffer_size": self.message_buffer.size,
             "send_task_active": self.send_tasks.active_count(),
-            "poll_interval": self.config.poll_interval,
-            "max_send_per_minute": self.config.max_send_per_minute,
-            "last_error": self._last_error,
+            "poll_interval": self.config.ocr_poll_interval,
+            "max_send_per_minute": self.config.ocr_max_send_per_minute,
+            "last_error": last_error,
         }
 
     def attach(self) -> dict:
-        with self._attach_lock:
-            if self._runtime is not None:
-                self._runtime.shutdown()
-            self.send_tasks.fail_active(
-                error_message="微信已重新附加，原发送任务不再继续执行"
-            )
-            self._runtime = None
-            self._wx = None
-
-            with uia.UIAutomationInitializerInThread():
-                wx = self._wechat_factory()
-                if not wx.IsOnline():
-                    raise WeChatOfflineError("微信不在线或未登录，无法附加")
-
-                runtime = self._runtime_factory(
-                    wx,
-                    poll_interval=self.config.poll_interval,
-                    my_names=self.config.my_names,
-                    max_send_per_minute=self.config.max_send_per_minute,
-                    on_message=self._on_runtime_message,
-                    on_send_started=self._on_send_started,
-                    on_send_task_completed=self._on_send_task_completed,
-                    on_error=self._on_runtime_error,
-                    on_state_changed=self._on_listener_state_changed,
-                    on_health_event=self._on_health_event,
-                    on_health_changed=self._on_health_changed,
-                )
-                runtime.start_send_queue()
-                self._wx = wx
-                self._runtime = runtime
-
-                version = get_process_version(wx.pid)
-                if version == self._baseline_version:
-                    self._restore_listener_sessions(runtime)
-                    runtime.start_listener()
-
-            return {
-                "status": "attached",
-                "wechat_pid": wx.pid,
-                "wechat_hwnd": f"{wx.hwnd:#x}",
-            }
-
-    def add_listener_session(self, name: str):
-        self._require_ready()
-        runtime = self._runtime
-        if runtime is None:
-            raise WeChatOfflineError("微信未附加，请先调用 POST /api/v1/attach")
-        with uia.UIAutomationInitializerInThread():
-            try:
-                return runtime.add_listener_session(name)
-            except ValueError as exc:
-                self._raise_listener_error(exc)
-
-    def remove_listener_session(self, name: str) -> None:
-        self._require_ready()
-        runtime = self._runtime
-        if runtime is None:
-            raise WeChatOfflineError("微信未附加，请先调用 POST /api/v1/attach")
-        with uia.UIAutomationInitializerInThread():
-            if not runtime.remove_listener_session(name):
-                raise ListenerSessionNotFoundError(f"监听会话不存在：{name!r}")
-
-    def get_listener_sessions(self) -> list[dict]:
-        runtime = self._runtime
-        if runtime is None:
-            return []
-        return [
-            {
-                "name": name,
-                "type": runtime.listener_session_type(name),
-            }
-            for name in runtime.list_listener_sessions()
-        ]
+        hwnd, pid = self._require_wechat_window()
+        self._last_error = None
+        return {
+            "status": "attached",
+            "wechat_pid": pid,
+            "wechat_hwnd": f"{hwnd:#x}",
+        }
 
     def start_listener(self) -> None:
-        with uia.UIAutomationInitializerInThread():
-            self._require_ready()
-            if self._runtime is not None:
-                self._runtime.start_listener()
+        self._require_wechat_window()
+        self.start_ocr()
 
     def stop_listener(self) -> None:
-        if self._runtime is None:
-            raise WeChatOfflineError("微信未附加，请先调用 POST /api/v1/attach")
-        self._runtime.stop_listener()
+        self.stop_ocr()
 
     def get_messages(
         self,
@@ -243,15 +116,11 @@ class ApiService:
     ) -> tuple[list[BufferedMessage], int, bool]:
         return self.message_buffer.get_after(cursor, limit=limit, timeout=timeout)
 
-    def send(self, session: str, text: str) -> SendTask:
-        with uia.UIAutomationInitializerInThread():
-            self._require_ready()
-            runtime = self._runtime
-            if runtime is None:
-                raise WeChatOfflineError("微信未附加，请先调用 POST /api/v1/attach")
-            task = self.send_tasks.create(session, text)
-            runtime.send_queue.submit(session, text, task_id=task.task_id)
-            return task
+    def send(self, text: str) -> SendTask:
+        channel = self._require_ocr_channel()
+        task = self.send_tasks.create(text)
+        channel.send(text, task_id=task.task_id)
+        return task
 
     def get_send_task(self, task_id: str) -> SendTask:
         task = self.send_tasks.get(task_id)
@@ -259,32 +128,10 @@ class ApiService:
             raise SendTaskNotFoundError(f"发送任务不存在：{task_id!r}")
         return task
 
-    @staticmethod
-    def _load_ocr_calibration() -> OcrCalibration:
-        path = app_data_path("ocr_calibration.json")
-        try:
-            return load_ocr_calibration(path)
-        except (OSError, ValueError) as exc:
-            logging.getLogger(__name__).warning(
-                "OCR 标定文件读取失败，使用默认区域：%s", exc
-            )
-            return OcrCalibration()
-
-    def start_ocr(self, session: Optional[str] = None) -> dict:
-        session_name = (session or self.config.ocr_session).strip()
-        if not session_name:
-            raise OcrSessionNotConfiguredError(
-                "OCR 监听会话未配置：请在 api_config.json 设置 ocr_session，"
-                "或在启动请求中传入 session"
-            )
-
+    def start_ocr(self) -> dict:
         with self._ocr_lock:
             channel = self._ocr_channel
             if channel is not None and channel.running:
-                if channel.session != session_name:
-                    raise OcrChannelNotRunningError(
-                        "OCR 通道已运行，需先停止当前会话后才能切换"
-                    )
                 return channel.status()
 
             if channel is not None:
@@ -299,17 +146,16 @@ class ApiService:
 
             calibration = self._load_ocr_calibration()
             channel = factory(
-                session=session_name,
                 poll_interval=self.config.ocr_poll_interval,
                 max_send_per_minute=self.config.ocr_max_send_per_minute,
                 state_path=app_data_path("ocr_listener_state.json"),
                 input_x_ratio=calibration.input_x_ratio,
                 input_y_ratio=calibration.input_y_ratio,
                 title_box=calibration.title_box,
-                chat_box=calibration.chat_box,
-                list_box=calibration.list_box,
-                on_message=self._on_ocr_message,
-                on_error=self._on_ocr_error,
+            chat_box=calibration.chat_box,
+            on_message=self._on_ocr_message,
+            on_chat_changed=self._on_ocr_chat_changed,
+            on_error=self._on_ocr_error,
                 on_send_started=self._on_ocr_send_started,
                 on_send_completed=self._on_ocr_send_completed,
             )
@@ -326,180 +172,94 @@ class ApiService:
         with self._ocr_lock:
             channel = self._ocr_channel
             if channel is None:
-                return {"status": "stopped", "session": self.config.ocr_session}
-            session = channel.session
+                return {"status": "stopped"}
             channel.stop(timeout=4.0)
             self._ocr_channel = None
-            return {"status": "stopped", "session": session}
+            return {"status": "stopped"}
 
     def get_ocr_status(self) -> dict:
-        with self._ocr_lock:
-            if self._ocr_channel is None:
-                return {
-                    "running": False,
-                    "session": self.config.ocr_session,
-                    "session_type": None,
-                    "active_session": "",
-                    "capture_queue_size": 0,
-                    "parse_queue_size": 0,
-                    "send_queue_size": 0,
-                    "poll_interval": self.config.ocr_poll_interval,
-                    "max_send_per_minute": self.config.ocr_max_send_per_minute,
-                    "last_frame_signature": None,
-                    "last_accepted_signature": None,
-                    "ocr_skip_identical_count": 0,
-                    "last_error": None,
-                }
-            return self._ocr_channel.status()
-
-    def get_ocr_messages(
-        self,
-        cursor: int,
-        *,
-        limit: int = 100,
-        timeout: float = 0.0,
-    ) -> tuple[list[BufferedMessage], int, bool]:
-        return self.message_buffer.get_after(cursor, limit=limit, timeout=timeout)
-
-    def send_ocr(self, text: str) -> SendTask:
-        with self._ocr_lock:
-            channel = self._ocr_channel
-            if channel is None or not channel.running:
-                raise OcrChannelNotRunningError(
-                    "OCR 通道未启动，请先调用 POST /api/v1/ocr/start"
-                )
-            task = self.send_tasks.create(channel.session, text)
-            channel.send(text, task_id=task.task_id)
-            return task
-
-    def get_sessions(self) -> list:
-        with uia.UIAutomationInitializerInThread():
-            wx = self._require_ready()
-            return wx.GetSession(self.config.max_sessions)
+        channel = self.ocr_channel
+        if channel is None:
+            return {
+                "running": False,
+                "chat_title": "",
+                "chat_type": None,
+                "capture_queue_size": 0,
+                "parse_queue_size": 0,
+                "send_queue_size": 0,
+                "poll_interval": self.config.ocr_poll_interval,
+                "max_send_per_minute": self.config.ocr_max_send_per_minute,
+                "last_frame_signature": None,
+                "last_accepted_signature": None,
+                "ocr_skip_identical_count": 0,
+                "last_error": None,
+            }
+        return channel.status()
 
     def shutdown(self) -> None:
         with self._ocr_lock:
-            if self._ocr_channel is not None:
-                self._ocr_channel.stop(timeout=4.0)
+            channel = self._ocr_channel
+            if channel is not None:
+                channel.stop(timeout=4.0)
                 self._ocr_channel = None
-        with self._attach_lock:
-            if self._runtime is not None:
-                self._runtime.shutdown()
-            self._runtime = None
-            self._wx = None
 
-    def _require_ready(self) -> WeChat:
-        wx = self._wx
-        if wx is None:
-            raise WeChatOfflineError("微信未附加，请先调用 POST /api/v1/attach")
-        if not wx.IsOnline():
-            raise WeChatOfflineError("微信已离线或已退出登录")
-        version = get_process_version(wx.pid)
-        if version != self._baseline_version:
-            raise WeChatVersionError(
-                f"微信版本 {version or '未知'} 与基线 {self._baseline_version} 不匹配，"
-                "已拒绝 UIA 会话操作"
-            )
-        return wx
-
-    def _try_recover(self) -> bool:
-        """微信窗口仍在但 UIA 树失效时，尝试恢复控件树。"""
-
-        wx = self._wx
-        if wx is None:
-            return False
-        now = time.monotonic()
-        if now - self._last_recovery_at < 5.0:
-            return bool(wx.IsOnline())
-        self._last_recovery_at = now
+    @staticmethod
+    def _load_ocr_calibration() -> OcrCalibration:
+        path = app_data_path("ocr_calibration.json")
         try:
-            with uia.UIAutomationInitializerInThread():
-                recovered = bool(wx.Recover())
-        except Exception as exc:
-            self._last_error = f"微信控件树恢复失败：{type(exc).__name__}: {exc}"
-            logging.getLogger(__name__).warning(self._last_error)
-            return False
-        online = bool(wx.IsOnline())
-        if recovered and online:
-            self._last_error = None
-            logging.getLogger(__name__).info("微信控件树恢复成功")
-        return online
+            return load_ocr_calibration(path)
+        except (OSError, ValueError) as exc:
+            logging.getLogger(__name__).warning(
+                "OCR 标定文件读取失败，使用默认区域：%s", exc
+            )
+            return OcrCalibration()
 
-    def _restore_listener_sessions(self, runtime: WeChatRuntime) -> None:
-        for name in self.config.listener_sessions:
-            try:
-                runtime.add_listener_session(name)
-            except Exception:
-                # 配置中的会话可能暂未出现在微信里；服务仍保持可用。
-                pass
+    @staticmethod
+    def _find_wechat_window():
+        from handwechat.ocr_channel import _find_wechat_window
 
-    def _on_runtime_message(self, session: str, message) -> None:
-        self.message_buffer.append(session, message, self._listener_session_type(session))
+        located = _find_wechat_window()
+        if located is None:
+            return None
+        hwnd, _rect = located
+        pid = wintypes.DWORD(0)
+        ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        return hwnd, pid.value or None
 
-    def _on_ocr_message(self, session: str, message) -> None:
-        session_type = None
-        with self._ocr_lock:
-            if self._ocr_channel is not None:
-                session_type = self._ocr_channel.session_type
-        self.message_buffer.append(session, message, session_type)
+    @classmethod
+    def _require_wechat_window(cls):
+        located = cls._find_wechat_window()
+        if located is None:
+            raise WeChatOfflineError("未找到微信主窗口，请确认微信已启动并登录")
+        return located
+
+    def _require_ocr_channel(self):
+        channel = self.ocr_channel
+        if channel is None or not channel.running:
+            raise OcrChannelNotRunningError(
+                "OCR 通道未启动，请先调用 POST /api/v1/listener/start"
+            )
+        return channel
+
+    def _on_ocr_message(self, message) -> None:
+        self.message_buffer.append(message)
+
+    def _on_ocr_chat_changed(self, _chat_title: str) -> None:
+        self.message_buffer.clear()
 
     def _on_ocr_error(self, context: str, exc: Exception) -> None:
-        logging.getLogger(__name__).warning(
-            "OCR %s: %s: %s", context, type(exc).__name__, exc
-        )
+        text = f"{context}: {type(exc).__name__}: {exc}"
+        self._last_error = text
+        logging.getLogger(__name__).warning(text)
 
     def _on_ocr_send_started(self, task_id: str, _text: str) -> None:
-        self._on_send_started(task_id, "", _text)
+        self.send_tasks.mark_started(task_id)
 
     def _on_ocr_send_completed(
         self,
         task_id: str,
-        text: str,
-        ok: bool,
-        detail: str,
-    ) -> None:
-        self._on_send_task_completed(task_id, "", text, ok, detail)
-
-    def _on_runtime_error(self, context: str, exc: Exception) -> None:
-        self._last_error = f"{context}: {type(exc).__name__}: {exc}"
-        logging.getLogger(__name__).warning(self._last_error)
-
-    def _on_listener_state_changed(self, running: bool) -> None:
-        logging.getLogger(__name__).info(
-            "微信监听状态：%s", "running" if running else "stopped"
-        )
-
-    def _on_health_event(self, kind: str, message: str) -> None:
-        logging.getLogger(__name__).info("[%s] %s", kind, message)
-
-    def _on_health_changed(self, ok: bool, detail: str) -> None:
-        if ok:
-            self._last_error = None
-        else:
-            self._last_error = detail or "微信健康自检未通过"
-
-    def _on_send_started(self, task_id: str, _session: str, _text: str) -> None:
-        self.send_tasks.mark_started(task_id)
-
-    def _on_send_task_completed(
-        self,
-        task_id: str,
-        _session: str,
         _text: str,
         ok: bool,
         detail: str,
     ) -> None:
         self.send_tasks.mark_completed(task_id, ok=ok, detail=detail)
-
-    def _listener_session_type(self, session: str) -> Optional[str]:
-        runtime = self._runtime
-        if runtime is None:
-            return None
-        return runtime.listener_session_type(session)
-
-    @staticmethod
-    def _raise_listener_error(exc: ValueError) -> None:
-        text = str(exc)
-        if "上限" in text:
-            raise ListenerSessionLimitError(text)
-        raise ListenerSessionNotFoundError(text)

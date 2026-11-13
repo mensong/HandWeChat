@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""API 内存消息缓冲区和长轮询支持。"""
+"""In-memory buffer for messages from the current WeChat chat."""
 
 from __future__ import annotations
 
@@ -7,7 +7,6 @@ import threading
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Optional
 
 from handwechat.models import BaseMessage, MessageType
 
@@ -20,8 +19,6 @@ def _now_text() -> str:
 class BufferedMessage:
     cursor: int
     id: str
-    session: str
-    session_type: Optional[str]
     sender: str
     content: str
     is_at_me: bool
@@ -29,7 +26,7 @@ class BufferedMessage:
 
 
 class MessageBuffer:
-    """线程安全环形缓冲区；cursor 在服务进程生命周期内单调递增。"""
+    """Thread-safe ring buffer with a process-wide monotonic cursor."""
 
     def __init__(self, size: int = 5000) -> None:
         self._messages: deque[BufferedMessage] = deque(maxlen=max(1, int(size)))
@@ -45,13 +42,8 @@ class MessageBuffer:
         with self._condition:
             return self._cursor
 
-    def append(
-        self,
-        session: str,
-        message: BaseMessage,
-        session_type: Optional[str] = None,
-    ) -> int:
-        """只缓冲纯文本消息，并返回服务端全局游标。"""
+    def append(self, message: BaseMessage) -> int:
+        """Buffer pure text messages and return the process-wide cursor."""
 
         if message.type != MessageType.TEXT:
             return self.latest_cursor
@@ -61,8 +53,6 @@ class MessageBuffer:
             item = BufferedMessage(
                 cursor=self._cursor,
                 id=str(self._cursor),
-                session=session,
-                session_type=session_type,
                 sender=message.sender,
                 content=message.content,
                 is_at_me=bool(message.is_at_me),
@@ -72,6 +62,12 @@ class MessageBuffer:
             self._condition.notify_all()
             return self._cursor
 
+    def clear(self) -> None:
+        """Discard buffered messages while preserving the global cursor."""
+
+        with self._condition:
+            self._messages.clear()
+
     def get_after(
         self,
         cursor: int,
@@ -79,8 +75,6 @@ class MessageBuffer:
         limit: int = 100,
         timeout: float = 0.0,
     ) -> tuple[list[BufferedMessage], int, bool]:
-        """返回 cursor 之后的消息；timeout 秒内没有新消息则立即返回。"""
-
         normalized_cursor = max(0, int(cursor))
         normalized_limit = max(1, int(limit))
         with self._condition:

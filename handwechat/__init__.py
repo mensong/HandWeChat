@@ -1,45 +1,37 @@
 # -*- coding: utf-8 -*-
-"""HandWeChat 微信 4.x 自研适配层（基于 uiautomation）。"""
+"""HandWeChat current-chat OCR adapter for WeChat PC 4.x."""
 
-from handwechat.errors import AttachError, ControlNotFoundError, HWError
-from handwechat.health import HealthMonitor
-from handwechat.listener import ListenState, MessageListener
+from handwechat.errors import AttachError, HWError, WeChatOfflineError
 from handwechat.models import (
     BaseMessage,
     MessageAttr,
     MessageType,
     OtherMessage,
-    Session,
-    SessionType,
     SystemMessage,
     TextMessage,
     TimeMessage,
 )
-from handwechat.wechat import WeChat
+from handwechat.ocr_calibration import OcrCalibration
+from handwechat.ocr_channel import OcrChannel
 from handwechat.rate_limit import TokenBucketRateLimiter
-from handwechat.selfcheck import SelfCheckItem, SelfCheckResult
+from handwechat.runtime import WeChatRuntime
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "AttachError",
     "BaseMessage",
-    "ControlNotFoundError",
     "HWError",
-    "HealthMonitor",
-    "ListenState",
-    "MessageListener",
     "MessageAttr",
     "MessageType",
+    "OcrCalibration",
+    "OcrChannel",
     "OtherMessage",
-    "SelfCheckItem",
-    "SelfCheckResult",
-    "Session",
-    "SessionType",
     "SystemMessage",
     "TextMessage",
     "TimeMessage",
     "TokenBucketRateLimiter",
-    "WeChat",
+    "WeChatOfflineError",
+    "WeChatRuntime",
     "__version__",
 ]

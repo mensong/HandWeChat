@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""HTTP API 发送任务的线程安全内存存储。"""
+"""Thread-safe in-memory send task store."""
 
 from __future__ import annotations
 
@@ -24,7 +24,6 @@ class SendTaskStatus:
 @dataclass
 class SendTask:
     task_id: str
-    session: str
     text: str
     status: str
     submitted_at: str
@@ -38,7 +37,7 @@ def _now_text() -> str:
 
 
 class SendTaskStore:
-    """按配置保留已完成任务；未完成任务始终可查询。"""
+    """Keep completed tasks for the configured retention window."""
 
     def __init__(self, retention_minutes: int = 30) -> None:
         self._retention_seconds = max(1, int(retention_minutes)) * 60
@@ -56,7 +55,7 @@ class SendTaskStore:
                 if task.status in (SendTaskStatus.QUEUED, SendTaskStatus.RUNNING)
             )
 
-    def create(self, session: str, text: str) -> SendTask:
+    def create(self, text: str) -> SendTask:
         now = datetime.now(timezone.utc).astimezone()
         with self._lock:
             self._cleanup(now)
@@ -67,7 +66,6 @@ class SendTaskStore:
             self._counter += 1
             task = SendTask(
                 task_id=f"send_{date}_{self._counter:06d}",
-                session=session,
                 text=text,
                 status=SendTaskStatus.QUEUED,
                 submitted_at=_now_text(),
@@ -99,9 +97,7 @@ class SendTaskStore:
                 task.status = SendTaskStatus.FAILED
                 task.completed_at = _now_text()
                 task.error_code = (
-                    "SEND_VERIFY_FAILED"
-                    if "回读" in detail
-                    else "SEND_FAILED"
+                    "SEND_VERIFY_FAILED" if "回读" in detail else "SEND_FAILED"
                 )
                 task.error_message = detail or "发送失败"
             _log_task("completed" if ok else "failed", task)
@@ -126,18 +122,17 @@ class SendTaskStore:
                 self._tasks.pop(task_id, None)
 
     def fail_active(self, *, error_message: str) -> int:
-        """重新附加或关闭前，把旧运行时遗留的任务标记为失败。"""
-
         changed = 0
         with self._lock:
             for task in self._tasks.values():
-                if task.status in (SendTaskStatus.QUEUED, SendTaskStatus.RUNNING):
-                    task.status = SendTaskStatus.FAILED
-                    task.completed_at = _now_text()
-                    task.error_code = "SEND_FAILED"
-                    task.error_message = error_message
-                    _log_task("failed", task)
-                    changed += 1
+                if task.status not in (SendTaskStatus.QUEUED, SendTaskStatus.RUNNING):
+                    continue
+                task.status = SendTaskStatus.FAILED
+                task.completed_at = _now_text()
+                task.error_code = "SEND_FAILED"
+                task.error_message = error_message
+                _log_task("failed", task)
+                changed += 1
         return changed
 
     def to_dict(self, task: SendTask) -> dict:
@@ -148,7 +143,6 @@ def _log_task(action: str, task: SendTask) -> None:
     payload = {
         "action": action,
         "task_id": task.task_id,
-        "session": task.session,
         "status": task.status,
         "error_code": task.error_code,
         "error_message": task.error_message,
