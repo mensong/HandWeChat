@@ -38,8 +38,9 @@
       margin: 0 auto;
       padding: 20px;
       display: grid;
-      grid-template-rows: auto auto 1fr;
+      grid-template-rows: auto auto minmax(0, 1fr);
       gap: 16px;
+      height: 100vh;
       min-height: 100vh;
     }
 
@@ -209,7 +210,10 @@
     .panel-title { margin: 0; font-size: 15px; color: var(--text); }
 
     .message-list {
+      min-height: 0;
       overflow: auto;
+      overflow-y: auto;
+      scrollbar-gutter: stable;
       padding: 10px 16px 16px;
     }
 
@@ -581,8 +585,13 @@
     }
 
     function renderMessages(items) {
-      if (items.length) elements.messageList.replaceChildren(...items.map(renderMessage));
-      state.messageCount += items.length;
+      if (items.length) {
+        elements.messageList.querySelector(".empty")?.remove();
+        for (const item of items) {
+          elements.messageList.appendChild(renderMessage(item));
+          state.messageCount += 1;
+        }
+      }
       setPill(elements.messageCount, `${state.messageCount} 条`, "online");
     }
 
