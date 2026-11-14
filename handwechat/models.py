@@ -31,7 +31,6 @@ class BaseMessage:
     attr: str
     type: str
     index: int
-    is_at_me: bool = False
     extra: dict = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -41,7 +40,7 @@ class BaseMessage:
         return (
             f"<{self.__class__.__name__} {self.attr}/{self.type} "
             f"sender={self.sender!r} content={self.content[:30]!r} "
-            f"at_me={self.is_at_me} index={self.index}>"
+            f"index={self.index}>"
         )
 
 

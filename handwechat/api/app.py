@@ -73,7 +73,6 @@ def _message_response(item) -> MessageResponse:
         cursor=item.cursor,
         sender=item.sender,
         content=item.content,
-        is_at_me=item.is_at_me,
         received_at=item.received_at,
     )
 

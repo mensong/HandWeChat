@@ -226,7 +226,6 @@
     }
 
     .message:last-child { border-bottom: 0; }
-    .message.at-me { background: #fff8e3; }
     .message-meta { color: var(--text-muted); font-size: 12px; min-width: 0; }
     .message-meta strong {
       display: block;
@@ -597,7 +596,7 @@
 
     function renderMessage(item) {
       const row = document.createElement("article");
-      row.className = `message${item.is_at_me ? " at-me" : ""}${item.sender === "我" ? " message-self" : ""}`;
+      row.className = `message${item.sender === "我" ? " message-self" : ""}`;
 
       const meta = document.createElement("div");
       meta.className = "message-meta";
@@ -606,13 +605,6 @@
       const time = document.createElement("span");
       time.textContent = formatTime(item.received_at);
       meta.append(sender, time);
-      if (item.is_at_me) {
-        const atMe = document.createElement("span");
-        atMe.textContent = "@我";
-        atMe.className = "badge running";
-        meta.append(document.createElement("br"), atMe);
-      }
-
       const content = document.createElement("div");
       content.className = "message-content";
       content.textContent = item.content;

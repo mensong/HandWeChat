@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Fake-runtime smoke test for M5 logging, diagnostics and task status."""
+"""Fake-channel smoke test for logging, diagnostics and send task status."""
 
 from __future__ import annotations
 
@@ -10,94 +10,73 @@ import tempfile
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from fastapi.testclient import TestClient
 
-import handwechat.api.service as api_service
+import handwechat.ocr_channel as ocr_channel
 from handwechat.api.app import create_app
 from handwechat.api.config import ApiConfig
 from handwechat.api.service import ApiService
 
 
-class FakeWeChat:
-    def IsOnline(self) -> bool:
-        return True
+class FakeOcrChannel:
+    def __init__(self, **kwargs) -> None:
+        self.kwargs = kwargs
+        self.running_flag = False
+        self.stopped = False
+        self.send_queue = SimpleNamespace(size=0)
 
     @property
-    def pid(self) -> int:
-        return 12345
+    def running(self) -> bool:
+        return self.running_flag
 
     @property
-    def hwnd(self) -> int:
-        return 0xE30D24
-
-
-class FakeSendQueue:
-    def __init__(self, runtime) -> None:
-        self.runtime = runtime
-        self.items: list[str] = []
+    def last_error(self) -> None:
+        return None
 
     @property
-    def size(self) -> int:
-        return len(self.items)
+    def chat_title(self) -> str:
+        return "group"
 
-    def submit(self, session: str, text: str, *, task_id: str | None = None) -> str:
-        task_id = task_id or f"fake_{len(self.items) + 1}"
-        self.items.append(task_id)
+    @property
+    def chat_type(self) -> str | None:
+        return "group"
 
+    def start(self) -> None:
+        self.running_flag = True
+
+    def stop(self, timeout: float = 4.0) -> None:
+        self.running_flag = False
+        self.stopped = True
+
+    def status(self) -> dict:
+        return {
+            "running": self.running_flag,
+            "chat_title": self.chat_title,
+            "chat_type": self.chat_type,
+            "send_queue_size": self.send_queue.size,
+            "last_error": self.last_error,
+        }
+
+    def send(self, text: str, *, task_id: str | None = None) -> None:
         def run() -> None:
             time.sleep(0.05)
-            if task_id in self.items:
-                self.items.remove(task_id)
-            self.runtime.kwargs["on_send_started"](task_id, session, text)
-            ok = session != "fail-session"
-            self.runtime.kwargs["on_send_task_completed"](
+            ok = text != "M5 failure"
+            self.kwargs["on_send_started"](task_id, text)
+            self.kwargs["on_send_completed"](
                 task_id,
-                session,
                 text,
                 ok,
                 "" if ok else "send verification failed",
             )
 
         threading.Thread(target=run, daemon=True).start()
-        return task_id
 
-
-class FakeRuntime:
-    def __init__(self, instance, **kwargs) -> None:
-        self.kwargs = kwargs
-        self.send_queue = FakeSendQueue(self)
-        self.started_send_queue = False
-        self.stopped = False
-        self.sessions = ["listen-1", "listen-2"]
-
-    @property
-    def listener_running(self) -> bool:
-        return False
-
-    @property
-    def send_queue_size(self) -> int:
-        return self.send_queue.size
-
-    def start_send_queue(self) -> None:
-        self.started_send_queue = True
-
-    def start_listener(self) -> None:
-        pass
-
-    def stop_listener(self) -> None:
-        pass
-
-    def shutdown(self) -> None:
-        self.stopped = True
-
-    def list_listener_sessions(self) -> list[str]:
-        return list(self.sessions)
-
-    def listener_session_type(self, name: str) -> str | None:
-        return "group" if name == "listen-1" else "friend"
+    def emit_error(self, context: str, exc: Exception) -> None:
+        self.kwargs["on_error"](context, exc)
 
 
 def wait_task(client: TestClient, task_id: str) -> dict:
@@ -121,59 +100,55 @@ def read_json_lines(path: Path) -> list[dict]:
 
 
 def main() -> None:
-    api_service.get_process_version = lambda pid: api_service.REQUIRED_WECHAT_VERSION
-    runtime = None
-
-    def runtime_factory(instance, **kwargs):
-        nonlocal runtime
-        runtime = FakeRuntime(instance, **kwargs)
-        return runtime
+    ocr_channel._find_wechat_window = lambda: (0xE30D24, None)
 
     with tempfile.TemporaryDirectory() as temp_dir:
         config = ApiConfig(
             log_dir=temp_dir,
             access_log_file="access.log",
             send_task_log_file="tasks.log",
+            ocr_poll_interval=1.5,
+            ocr_max_send_per_minute=7,
         )
-        service = ApiService(
-            config,
-            wechat_factory=lambda: FakeWeChat(),
-            runtime_factory=runtime_factory,
-        )
+        service = ApiService(config, ocr_channel_factory=FakeOcrChannel)
 
         with TestClient(create_app(config=config, service=service)) as client:
             health = client.get("/api/v1/health")
             assert health.status_code == 200, health.text
-            health_payload = health.json()
-            assert health_payload["attached"] is True
-            assert health_payload["listener_session_count"] == 2
-            assert health_payload["message_buffer_size"] == 0
-            assert health_payload["send_task_active"] == 0
-            assert health_payload["last_error"] is None
-            assert health_payload["poll_interval"] == config.poll_interval
-            assert health_payload["max_send_per_minute"] == config.max_send_per_minute
+            payload = health.json()
+            assert payload["attached"] is True
+            assert payload["online"] is True
+            assert payload["listener_running"] is False
+            assert payload["message_buffer_size"] == 0
+            assert payload["send_task_active"] == 0
+            assert payload["last_error"] is None
+            assert payload["poll_interval"] == config.ocr_poll_interval
+            assert payload["max_send_per_minute"] == config.ocr_max_send_per_minute
 
-            runtime.kwargs["on_health_changed"](False, "self check failed")
-            health_payload = client.get("/api/v1/health").json()
-            assert health_payload["last_error"] == "self check failed"
-            runtime.kwargs["on_health_changed"](True, "")
-            health_payload = client.get("/api/v1/health").json()
-            assert health_payload["last_error"] is None
+            started = client.post("/api/v1/listener/start")
+            assert started.status_code == 200, started.text
+            assert started.json()["status"] == "running"
 
-            queued = client.post(
-                "/api/v1/send",
-                json={"session": "file-transfer", "text": "M5 success"},
+            channel = service.ocr_channel
+            assert isinstance(channel, FakeOcrChannel)
+            channel.emit_error("OCR smoke", RuntimeError("capture failed"))
+            health_payload = client.get("/api/v1/health").json()
+            assert (
+                health_payload["last_error"]
+                == "OCR smoke: RuntimeError: capture failed"
             )
+
+            queued = client.post("/api/v1/send", json={"text": "M5 success"})
             assert queued.status_code == 202, queued.text
-            success = wait_task(client, queued.json()["task_id"])
+            success_task_id = queued.json()["task_id"]
+            success = wait_task(client, success_task_id)
             assert success["status"] == "success"
+            assert success["error_code"] is None
 
-            failed_queued = client.post(
-                "/api/v1/send",
-                json={"session": "fail-session", "text": "M5 failure"},
-            )
+            failed_queued = client.post("/api/v1/send", json={"text": "M5 failure"})
             assert failed_queued.status_code == 202, failed_queued.text
-            failed = wait_task(client, failed_queued.json()["task_id"])
+            failed_task_id = failed_queued.json()["task_id"]
+            failed = wait_task(client, failed_task_id)
             assert failed["status"] == "failed"
             assert failed["error_code"] == "SEND_FAILED"
 
@@ -181,10 +156,7 @@ def main() -> None:
             assert missing.status_code == 404, missing.text
             assert missing.json()["code"] == "SEND_TASK_NOT_FOUND"
 
-            invalid = client.post(
-                "/api/v1/send",
-                json={"session": "file-transfer", "text": ""},
-            )
+            invalid = client.post("/api/v1/send", json={"text": ""})
             assert invalid.status_code == 422, invalid.text
             assert invalid.json()["code"] == "INVALID_REQUEST"
 
@@ -197,13 +169,17 @@ def main() -> None:
 
         task_entries = read_json_lines(Path(temp_dir) / "tasks.log")
         assert any(
-            entry["action"] == "created"
-            and entry["session"] == "file-transfer"
+            entry["action"] == "created" and entry["task_id"] == success_task_id
             for entry in task_entries
         )
-        assert any(entry["status"] == "success" for entry in task_entries)
         assert any(
-            entry["status"] == "failed" and entry["error_code"] == "SEND_FAILED"
+            entry["status"] == "success" and entry["task_id"] == success_task_id
+            for entry in task_entries
+        )
+        assert any(
+            entry["status"] == "failed"
+            and entry["task_id"] == failed_task_id
+            and entry["error_code"] == "SEND_FAILED"
             for entry in task_entries
         )
 
@@ -213,7 +189,9 @@ def main() -> None:
                 handler.close()
             logger.handlers.clear()
 
-    assert runtime is not None and runtime.stopped is True
+        assert isinstance(channel, FakeOcrChannel)
+        assert channel.stopped is True
+
     print("M5 API smoke: ok")
 
 

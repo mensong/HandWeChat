@@ -21,7 +21,6 @@ class BufferedMessage:
     id: str
     sender: str
     content: str
-    is_at_me: bool
     received_at: str
 
 
@@ -55,7 +54,6 @@ class MessageBuffer:
                 id=str(self._cursor),
                 sender=message.sender,
                 content=message.content,
-                is_at_me=bool(message.is_at_me),
                 received_at=str(message.extra.get("listen_time") or _now_text()),
             )
             self._messages.append(item)

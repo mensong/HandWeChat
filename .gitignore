@@ -15,4 +15,3 @@ docs/*.png
 vendor/
 build/
 dist/
-packaging/*.spec

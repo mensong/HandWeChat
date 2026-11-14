@@ -1,194 +1,220 @@
 # -*- coding: utf-8 -*-
-"""不依赖真实微信的 M3 监听与消息缓冲冒烟测试。"""
+"""Fake-channel smoke test for listener lifecycle and the message buffer."""
 
 from __future__ import annotations
 
+import logging
 import sys
+import tempfile
 from pathlib import Path
-from dataclasses import dataclass
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from fastapi.testclient import TestClient
 
-import handwechat.api.service as api_service
+import handwechat.ocr_channel as ocr_channel
 from handwechat.api.app import create_app
 from handwechat.api.config import ApiConfig
 from handwechat.api.service import ApiService
-from handwechat.models import MessageType, TextMessage
+from handwechat.models import MessageAttr, MessageType, OtherMessage, TextMessage
 
 
-class FakeRuntime:
-    def __init__(self, instance, **kwargs) -> None:
+class FakeOcrChannel:
+    def __init__(self, **kwargs) -> None:
         self.kwargs = kwargs
-        self.sessions = set()
-        self.types = {}
-        self.listener_running_state = False
-        self.start_count = 0
-        self.stop_count = 0
-        self.started_send_queue = False
+        self.running_flag = False
+        self.stopped = False
+        self.sent: list[tuple[str, str | None]] = []
+        self.send_queue = SimpleNamespace(size=0)
 
     @property
-    def listener_running(self) -> bool:
-        return self.listener_running_state
+    def running(self) -> bool:
+        return self.running_flag
 
     @property
-    def send_queue_size(self) -> int:
-        return 0
-
-    def start_send_queue(self) -> None:
-        self.started_send_queue = True
-
-    def add_listener_session(self, name: str):
-        if name == "不存在":
-            raise ValueError("找不到要监听的会话：'不存在'")
-        self.sessions.add(name)
-        self.types[name] = "group" if "大队" in name else "friend"
-
-        @dataclass
-        class Session:
-            name: str
-            type: str
-
-        return Session(name=name, type=self.types[name])
-
-    def remove_listener_session(self, name: str) -> bool:
-        existed = name in self.sessions
-        if existed:
-            self.sessions.remove(name)
-        return existed
-
-    def list_listener_sessions(self) -> list[str]:
-        return sorted(self.sessions)
-
-    def listener_session_type(self, name: str):
-        return self.types.get(name)
-
-    def start_listener(self) -> None:
-        self.start_count += 1
-        self.listener_running_state = True
-
-    def stop_listener(self) -> None:
-        self.stop_count += 1
-        self.listener_running_state = False
-
-    def shutdown(self) -> None:
-        self.stop_listener()
-
-    def emit_message(self, session: str, message: TextMessage) -> None:
-        self.kwargs["on_message"](session, message)
-
-
-class FakeWeChat:
-    def IsOnline(self) -> bool:
-        return True
+    def last_error(self) -> None:
+        return None
 
     @property
-    def pid(self) -> int:
-        return 12345
+    def chat_title(self) -> str:
+        return "group"
 
     @property
-    def hwnd(self) -> int:
-        return 0xE30D24
+    def chat_type(self) -> str | None:
+        return "group"
+
+    def start(self) -> None:
+        self.running_flag = True
+
+    def stop(self, timeout: float = 4.0) -> None:
+        self.running_flag = False
+        self.stopped = True
+
+    def status(self) -> dict:
+        return {
+            "running": self.running_flag,
+            "chat_title": self.chat_title,
+            "chat_type": self.chat_type,
+            "send_queue_size": self.send_queue.size,
+            "last_error": self.last_error,
+        }
+
+    def send(self, text: str, *, task_id: str | None = None) -> None:
+        self.sent.append((text, task_id))
+
+    def emit_message(self, message) -> None:
+        self.kwargs["on_message"](message)
+
+    def emit_chat_changed(self, title: str) -> None:
+        self.kwargs["on_chat_changed"](title)
+
+    def emit_error(self, context: str, exc: Exception) -> None:
+        self.kwargs["on_error"](context, exc)
 
 
 def main() -> None:
-    api_service.get_process_version = lambda pid: api_service.REQUIRED_WECHAT_VERSION
-    wx = FakeWeChat()
-    runtime = None
+    ocr_channel._find_wechat_window = lambda: (0xE30D24, None)
+    channels: list[FakeOcrChannel] = []
 
-    def runtime_factory(instance, **kwargs):
-        nonlocal runtime
-        runtime = FakeRuntime(instance, **kwargs)
-        return runtime
+    def channel_factory(**kwargs) -> FakeOcrChannel:
+        channel = FakeOcrChannel(**kwargs)
+        channels.append(channel)
+        return channel
 
-    service = ApiService(
-        ApiConfig(
-            listener_sessions=["888 种田大队"],
-            my_names=["机器人管理员"],
-        ),
-        wechat_factory=lambda: wx,
-        runtime_factory=runtime_factory,
-    )
+    with tempfile.TemporaryDirectory() as temp_dir:
+        config = ApiConfig(log_dir=temp_dir)
+        service = ApiService(config, ocr_channel_factory=channel_factory)
 
-    with TestClient(create_app(config=ApiConfig(), service=service)) as client:
-        assert runtime is not None
-        assert runtime.kwargs["my_names"] == ["机器人管理员"]
-        assert runtime.sessions == {"888 种田大队"}
-        assert runtime.listener_running_state is True
+        with TestClient(create_app(config=config, service=service)) as client:
+            health = client.get("/api/v1/health")
+            assert health.status_code == 200, health.text
+            payload = health.json()
+            assert payload["attached"] is True
+            assert payload["online"] is True
+            assert payload["listener_running"] is False
+            assert payload["message_buffer_size"] == 0
+            assert payload["last_error"] is None
+            assert payload["poll_interval"] == config.ocr_poll_interval
+            assert payload["max_send_per_minute"] == config.ocr_max_send_per_minute
 
-        sessions = client.get("/api/v1/listener/sessions")
-        assert sessions.status_code == 200, sessions.text
-        assert sessions.json()["items"][0]["name"] == "888 种田大队"
-        assert sessions.json()["items"][0]["type"] == "group"
+            send_before = client.post("/api/v1/send", json={"text": "hello"})
+            assert send_before.status_code == 409, send_before.text
+            assert send_before.json()["code"] == "OCR_CHANNEL_NOT_RUNNING"
 
-        add = client.post(
-            "/api/v1/listener/sessions",
-            json={"name": "文件传输助手"},
-        )
-        assert add.status_code == 200, add.text
-        assert add.json()["status"] == "added"
-        assert add.json()["name"] == "文件传输助手"
+            started = client.post("/api/v1/listener/start")
+            assert started.status_code == 200, started.text
+            assert started.json()["status"] == "running"
+            assert len(channels) == 1
+            channel = channels[0]
+            assert channel.running is True
+            assert channel.kwargs["poll_interval"] == config.ocr_poll_interval
+            assert (
+                channel.kwargs["max_send_per_minute"]
+                == config.ocr_max_send_per_minute
+            )
+            assert callable(channel.kwargs["on_message"])
 
-        missing = client.post(
-            "/api/v1/listener/sessions",
-            json={"name": "不存在"},
-        )
-        assert missing.status_code == 404, missing.text
-        assert missing.json()["code"] == "LISTENER_SESSION_NOT_FOUND"
+            channel.emit_message(
+                TextMessage(
+                    sender="alice",
+                    content="hello",
+                    attr=MessageAttr.FRIEND,
+                    type=MessageType.TEXT,
+                    index=1,
+                )
+            )
+            channel.emit_message(
+                OtherMessage(
+                    sender="system",
+                    content="[image]",
+                    attr=MessageAttr.FRIEND,
+                    type=MessageType.OTHER,
+                    index=2,
+                )
+            )
+            channel.emit_message(
+                TextMessage(
+                    sender="me",
+                    content="hi",
+                    attr=MessageAttr.SELF,
+                    type=MessageType.TEXT,
+                    index=3,
+                )
+            )
 
-        start = client.post("/api/v1/listener/start")
-        assert start.status_code == 200, start.text
-        assert start.json()["status"] == "running"
+            messages = client.get("/api/v1/messages?cursor=0&limit=1&timeout=0")
+            assert messages.status_code == 200, messages.text
+            payload = messages.json()
+            assert len(payload["items"]) == 1
+            assert payload["has_more"] is True
+            first = payload["items"][0]
+            assert first["sender"] == "alice"
+            assert first["content"] == "hello"
+            assert "is_at_me" not in first
+            cursor = payload["next_cursor"]
 
-        group_message = TextMessage(
-            session_name="888 种田大队",
-            sender="张三",
-            content="@机器人管理员 收到",
-            attr="friend",
-            type=MessageType.TEXT,
-            index=1,
-            is_at_me=True,
-        )
-        runtime.emit_message("888 种田大队", group_message)
+            rest = client.get(
+                f"/api/v1/messages?cursor={cursor}&limit=100&timeout=0"
+            )
+            assert rest.status_code == 200, rest.text
+            payload = rest.json()
+            assert len(payload["items"]) == 1
+            assert payload["items"][0]["sender"] == "me"
+            assert payload["items"][0]["content"] == "hi"
+            assert payload["has_more"] is False
 
-        private_message = TextMessage(
-            session_name="文件传输助手",
-            sender="文件传输助手",
-            content="测试",
-            attr="friend",
-            type=MessageType.TEXT,
-            index=1,
-        )
-        runtime.emit_message("文件传输助手", private_message)
+            channel.emit_chat_changed("group")
+            cleared = client.get("/api/v1/messages?cursor=0&limit=100&timeout=0")
+            assert cleared.status_code == 200, cleared.text
+            assert cleared.json()["items"] == []
 
-        messages = client.get("/api/v1/messages?cursor=0&limit=1&timeout=0")
-        assert messages.status_code == 200, messages.text
-        payload = messages.json()
-        assert len(payload["items"]) == 1
-        assert payload["has_more"] is True
-        assert payload["items"][0]["is_at_me"] is True
-        assert payload["items"][0]["session_type"] == "group"
-        cursor = payload["next_cursor"]
+            channel.emit_message(
+                TextMessage(
+                    sender="bob",
+                    content="after switch",
+                    attr=MessageAttr.FRIEND,
+                    type=MessageType.TEXT,
+                    index=4,
+                )
+            )
+            after_switch = client.get(
+                "/api/v1/messages?cursor=0&limit=100&timeout=0"
+            )
+            assert after_switch.status_code == 200, after_switch.text
+            payload = after_switch.json()
+            assert len(payload["items"]) == 1
+            assert payload["items"][0]["cursor"] == 3
 
-        messages = client.get(
-            f"/api/v1/messages?cursor={cursor}&limit=100&timeout=0"
-        )
-        assert messages.status_code == 200, messages.text
-        payload = messages.json()
-        assert payload["items"][0]["session"] == "文件传输助手"
-        assert payload["has_more"] is False
+            channel.emit_error("OCR test", ValueError("boom"))
+            health = client.get("/api/v1/health")
+            assert health.status_code == 200, health.text
+            assert health.json()["last_error"] == "OCR test: ValueError: boom"
 
-        stop = client.post("/api/v1/listener/stop")
-        assert stop.status_code == 200, stop.text
-        assert stop.json()["status"] == "stopped"
+            stopped = client.post("/api/v1/listener/stop")
+            assert stopped.status_code == 200, stopped.text
+            assert stopped.json()["status"] == "stopped"
+            assert channel.stopped is True
+            assert service.ocr_channel is None
 
-        remove = client.delete("/api/v1/listener/sessions/文件传输助手")
-        assert remove.status_code == 200, remove.text
-        assert remove.json()["status"] == "removed"
+            restarted = client.post("/api/v1/listener/start")
+            assert restarted.status_code == 200, restarted.text
+            assert len(channels) == 2
+            assert channels[1].running is True
 
-    assert runtime.started_send_queue is True
-    assert runtime.stop_count >= 1
+            attach = client.post("/api/v1/attach")
+            assert attach.status_code == 200, attach.text
+            assert attach.json()["status"] == "attached"
+            assert attach.json()["wechat_hwnd"] == "0xe30d24"
+
+        assert channels[-1].stopped is True
+
+        for logger_name in ("handwechat.api.access", "handwechat.api.send_tasks"):
+            logger = logging.getLogger(logger_name)
+            for handler in logger.handlers:
+                handler.close()
+            logger.handlers.clear()
+
     print("M3 API smoke: ok")
 
 

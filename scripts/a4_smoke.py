@@ -28,7 +28,7 @@ def main() -> int:
     def on_message(chat_name: str, msg) -> None:
         print(
             f"callback: {chat_name!r} seq={msg.extra.get('listen_seq')} "
-            f"sender={msg.sender!r} content={msg.content[:80]!r} at_me={msg.is_at_me}"
+            f"sender={msg.sender!r} content={msg.content[:80]!r}"
         )
         if isinstance(msg, TextMessage) and msg.content == text:
             received.append((chat_name, msg))

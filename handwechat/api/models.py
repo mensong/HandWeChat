@@ -41,7 +41,6 @@ class MessageResponse(BaseModel):
     cursor: int
     sender: str
     content: str
-    is_at_me: bool
     received_at: str
 
 

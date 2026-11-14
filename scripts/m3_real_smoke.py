@@ -88,11 +88,10 @@ def main() -> int:
         "buffered message: "
         f"cursor={item.cursor} session={item.session!r} "
         f"session_type={item.session_type!r} sender={item.sender!r} "
-        f"content={item.content!r} is_at_me={item.is_at_me}"
+        f"content={item.content!r}"
     )
     assert item.session == TARGET
     assert item.session_type == "friend"
-    assert item.is_at_me is False
 
     service.remove_listener_session(TARGET)
     service.shutdown()

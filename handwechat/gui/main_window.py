@@ -7,7 +7,6 @@ from datetime import datetime
 from typing import Optional
 
 from PySide6.QtWidgets import (
-    QCheckBox,
     QDialog,
     QHBoxLayout,
     QLabel,
@@ -102,8 +101,6 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.message_view, 1)
 
         bottom = QHBoxLayout()
-        self.at_me_filter = QCheckBox("只看@我")
-        self.at_me_filter.stateChanged.connect(self._render_messages)
         self.input_edit = QLineEdit(page)
         self.input_edit.setPlaceholderText("输入要发送到当前聊天的纯文本消息")
         self.input_edit.returnPressed.connect(self._send_current)
@@ -111,7 +108,6 @@ class MainWindow(QMainWindow):
         self.send_button.clicked.connect(self._send_current)
         self.queue_label = QLabel("发送队列：0")
         for widget in (
-            self.at_me_filter,
             self.input_edit,
             self.send_button,
             self.queue_label,
@@ -269,8 +265,6 @@ class MainWindow(QMainWindow):
             return
 
         messages = self.messages
-        if self.at_me_filter.isChecked():
-            messages = [item for item in messages if item.is_at_me]
 
         chunks = []
         for item in messages:
@@ -286,7 +280,6 @@ class MainWindow(QMainWindow):
                 prefix = "系统"
             else:
                 prefix = "时间"
-            highlight = "background:#fff2cc;" if item.is_at_me else ""
             content = (
                 item.content.replace("&", "&amp;")
                 .replace("<", "&lt;")
@@ -295,7 +288,7 @@ class MainWindow(QMainWindow):
             if item.type == "other":
                 content = "[暂不支持的消息类型]"
             chunks.append(
-                f"<div style='margin:4px 0;{highlight}'>"
+                f"<div style='margin:4px 0;'>"
                 f"<span style='color:{color};font-weight:bold;'>{prefix}</span>　"
                 f"<span style='color:#999;font-size:11px;'>"
                 f"{item.extra.get('listen_time', '')}</span><br>"

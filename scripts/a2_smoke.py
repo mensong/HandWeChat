@@ -32,7 +32,7 @@ def main() -> int:
             print(
                 f"  {msg.index:02d} {msg.attr:6s}/{msg.type:6s} "
                 f"sender={msg.sender!r} content={msg.content[:40]!r} "
-                f"at_me={msg.is_at_me} hash={msg.hash[:10]}"
+                f"hash={msg.hash[:10]}"
             )
 
         human = [m for m in messages if isinstance(m, TextMessage)]
