@@ -77,7 +77,7 @@ python setup.py install_deps --offline-dir ./wheels --mirror https://pypi.tuna.t
 
 ## 打包成 exe
 
-构建一个合并的 `--onedir` 目录包和一个微信冷启动器：
+构建一个合并的 `--onedir` 目录包：
 
 ```bash
 powershell -ExecutionPolicy Bypass -File packaging\build.ps1 -Target All
@@ -87,12 +87,6 @@ powershell -ExecutionPolicy Bypass -File packaging\build.ps1 -Target All
 
 ```bash
 powershell -ExecutionPolicy Bypass -File packaging\build.ps1 -Target Bundle
-```
-
-只构建微信启动器：
-
-```bash
-powershell -ExecutionPolicy Bypass -File packaging\build.ps1 -Target Start
 ```
 
 如果已经安装过构建依赖，可以跳过安装步骤：
@@ -106,12 +100,9 @@ powershell -ExecutionPolicy Bypass -File packaging\build.ps1 -Target All -SkipDe
 ```text
 dist\HandWeChat\HandWeChatGui.exe
 dist\HandWeChat\HandWeChatApi.exe
-dist\HandWeChatStart.exe
 ```
 
 GUI 和 API 共用 `dist\HandWeChat\data\` 保存配置和日志，也共用同一个 `ocr_calibration.json`。离线 OCR 模型位于 `dist\HandWeChat\_internal\ocr_models\`，并会随程序一起打包。
-
-在新电脑上，必须先运行 `dist\HandWeChatStart.exe` 冷启动微信。它会开启系统读屏标志并自动定位微信安装路径。若微信已经在运行，它不会自动重启微信；此时需要从托盘彻底退出微信，再重新运行启动器。登录完成后再启动并附加 `HandWeChatGui.exe` 或调用 `HandWeChatApi.exe`。
 
 ## 纯 OCR 通道
 

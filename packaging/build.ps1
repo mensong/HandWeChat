@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 [CmdletBinding()]
 param(
-    [ValidateSet("All", "Bundle", "Start")]
+    [ValidateSet("All", "Bundle")]
     [string]$Target = "All",
     [string]$Python = "python",
     [switch]$SkipDependencyInstall
@@ -29,24 +29,6 @@ try {
         )
         if ($LASTEXITCODE -ne 0) {
             throw "Failed to build HandWeChat bundle."
-        }
-    }
-
-    if ($Target -in @("All", "Start")) {
-        & $Python -m PyInstaller @(
-            "--clean"
-            "--noconfirm"
-            "--onefile"
-            "--console"
-            "--specpath", "packaging"
-            "--distpath", (Join-Path $root "dist")
-            "--workpath", (Join-Path $root "build")
-            "--paths", $root
-            "--name", "HandWeChatStart"
-            "$root\scripts\start_wechat.py"
-        )
-        if ($LASTEXITCODE -ne 0) {
-            throw "Failed to build HandWeChatStart."
         }
     }
 
