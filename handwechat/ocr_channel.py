@@ -156,12 +156,17 @@ def _frame_signature(
     return digest.hexdigest()
 
 
-def _common_suffix_length(keys: Sequence[str], suffix: Sequence[str]) -> int:
-    """Return the length of the tail shared by both key sequences."""
+def _overlap_length(previous_keys: Sequence[str], current_keys: Sequence[str]) -> int:
+    """Return the overlap between the previous key tail and the current prefix.
 
-    max_length = min(len(keys), len(suffix))
+    WeChat appends visible messages at the bottom and can scroll older messages
+    out of view.  Therefore the overlapping history is the tail of the previous
+    state and the prefix of the newly parsed frame.
+    """
+
+    max_length = min(len(previous_keys), len(current_keys))
     for length in range(max_length, 0, -1):
-        if list(keys[-length:]) == list(suffix[-length:]):
+        if list(previous_keys[-length:]) == list(current_keys[:length]):
             return length
     return 0
 
@@ -930,9 +935,9 @@ class OcrChannel:
                 self._save_state_locked()
                 return
 
-            overlap_length = _common_suffix_length(self._state.recent_keys, keys)
+            overlap_length = _overlap_length(self._state.recent_keys, keys)
             if overlap_length:
-                new_messages = list(frame.messages[: len(keys) - overlap_length])
+                new_messages = list(frame.messages[overlap_length:])
             else:
                 new_messages = list(frame.messages)
 
