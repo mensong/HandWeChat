@@ -8,6 +8,8 @@
 >=3.11,<3.12
 ```
 
+`setup.py` 会检测项目根目录下的 `.venv`。如果不存在，会自动创建虚拟环境，并在该环境中执行后续命令。
+
 ## 在线安装依赖
 
 使用默认清华镜像源安装 `requirements.txt` 中的依赖：
@@ -76,6 +78,8 @@ python setup.py install_deps --offline-dir ./wheels --mirror https://pypi.tuna.t
 上面的命令会被拒绝并提示二者只能选择一个。
 
 ## 打包成 exe
+
+打包脚本默认使用项目根目录下的 `.venv\Scripts\python.exe`。如果该虚拟环境不存在，会自动调用 `setup.py` 创建并安装运行依赖。
 
 构建一个合并的 `--onedir` 目录包：
 

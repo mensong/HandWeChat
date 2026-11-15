@@ -23,6 +23,45 @@ PACKAGE_NAME = "handwechat"
 ROOT = Path(__file__).resolve().parent
 DEFAULT_REQUIREMENTS_FILE = "requirements.txt"
 DEFAULT_MIRROR = "https://pypi.tuna.tsinghua.edu.cn/simple"
+VENV_DIR = ROOT / ".venv"
+
+
+def _venv_python() -> Path:
+    return VENV_DIR / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
+
+
+def _ensure_virtual_environment() -> None:
+    """Run all setup commands through the project-local .venv."""
+    venv_python = _venv_python()
+    setup_file = Path(__file__).resolve()
+
+    if venv_python.exists():
+        if Path(sys.executable).resolve() != venv_python.resolve():
+            print(f"Using virtual environment: {VENV_DIR}")
+            result = subprocess.run(
+                [str(venv_python), str(setup_file), *sys.argv[1:]],
+                cwd=str(ROOT),
+                check=False,
+            )
+            raise SystemExit(result.returncode)
+        return
+
+    print(f"Creating virtual environment: {VENV_DIR}")
+    subprocess.run(
+        [sys.executable, "-m", "venv", str(VENV_DIR)],
+        check=True,
+        cwd=str(ROOT),
+    )
+    if not venv_python.exists():
+        raise SystemExit(f"Virtual environment Python not found: {venv_python}")
+
+    print(f"Using virtual environment: {VENV_DIR}")
+    result = subprocess.run(
+        [str(venv_python), str(setup_file), *sys.argv[1:]],
+        cwd=str(ROOT),
+        check=False,
+    )
+    raise SystemExit(result.returncode)
 
 
 def _check_python_version() -> None:
@@ -110,6 +149,8 @@ class InstallDeps(Command):
 
 
 _check_python_version()
+
+_ensure_virtual_environment()
 
 setup(
     name="handwechat",
