@@ -123,7 +123,9 @@ OCR 通道不依赖 UIA 控件树，只读取微信当前打开的聊天，支�
 ```json
 {
   "ocr_poll_interval": 2.0,
-  "ocr_max_send_per_minute": 20
+  "ocr_max_send_per_minute": 20,
+  "ocr_dedup_queue_size": 10,
+  "ocr_log_file": "ocr.log"
 }
 ```
 
@@ -144,6 +146,28 @@ curl http://127.0.0.1:8000/api/v1/health
 ```bash
 curl http://127.0.0.1:8000/api/v1/messages?cursor=0^&limit=100^&timeout=10
 ```
+
+用 WebSocket 实时接收新消息（只推送连接建立之后的消息，不回补历史）：
+
+```python
+import asyncio
+import json
+
+import websockets
+
+
+async def main() -> None:
+    async with websockets.connect(
+        "ws://127.0.0.1:8000/api/v1/ws/messages"
+    ) as ws:
+        while True:
+            print(json.loads(await ws.recv()))
+
+
+asyncio.run(main())
+```
+
+WebSocket 依赖 `websockets`（已在 `requirements.txt` 中），帧格式见 `接口方案.md` 的「WebSocket 推送消息」。
 
 发送文本消息：
 

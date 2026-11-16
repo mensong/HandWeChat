@@ -183,7 +183,11 @@ def main() -> None:
             for entry in task_entries
         )
 
-        for logger_name in ("handwechat.api.access", "handwechat.api.send_tasks"):
+        for logger_name in (
+            "handwechat.api.access",
+            "handwechat.api.send_tasks",
+            "handwechat.ocr",
+        ):
             logger = logging.getLogger(logger_name)
             for handler in logger.handlers:
                 handler.close()

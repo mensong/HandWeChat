@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QPlainTextEdit,
     QPushButton,
+    QSpinBox,
     QTabWidget,
     QTextBrowser,
     QVBoxLayout,
@@ -142,6 +143,19 @@ class MainWindow(QMainWindow):
         self.calibrate_button.clicked.connect(self._start_ocr_calibration)
         calibration_row.addWidget(self.calibration_status_label, 1)
         calibration_row.addWidget(self.calibrate_button)
+
+        dedup_row = QHBoxLayout()
+        dedup_row.addWidget(QLabel("去重队列大小"))
+        self.dedup_spin = QSpinBox(page)
+        self.dedup_spin.setRange(1, 1000)
+        self.dedup_spin.setValue(int(self.config.dedup_queue_size))
+        self.dedup_spin.valueChanged.connect(self._on_dedup_size_changed)
+        dedup_row.addWidget(self.dedup_spin)
+        self.dedup_count_label = QLabel("已过滤重复：0")
+        dedup_row.addWidget(self.dedup_count_label)
+        dedup_row.addStretch(1)
+
+        layout.addLayout(dedup_row)
         layout.addLayout(calibration_row)
         layout.addStretch(1)
         self._refresh_ocr_calibration_status()
@@ -172,6 +186,7 @@ class MainWindow(QMainWindow):
         return WeChatController(
             poll_interval=self.config.poll_interval,
             max_send_per_minute=self.config.max_send_per_minute,
+            dedup_queue_size=self.config.dedup_queue_size,
         )
 
     def _on_attached(self, controller: WeChatController) -> None:
@@ -244,6 +259,19 @@ class MainWindow(QMainWindow):
         )
         last_error = status.get("last_error") or "无"
         self.listener_error_label.setText(f"最近错误：{last_error}")
+        self.dedup_count_label.setText(
+            "已过滤重复：{}".format(status.get("dedup_filtered_count", 0))
+        )
+
+    def _on_dedup_size_changed(self, value: int) -> None:
+        self.config.dedup_queue_size = max(1, int(value))
+        try:
+            self.config.save(self.CONFIG_PATH)
+        except OSError as exc:
+            self._log(f"去重队列配置保存失败：{exc}")
+        if self.controller:
+            self.controller.channel.dedup_queue_size = self.config.dedup_queue_size
+        self._log(f"去重队列大小已设为 {self.config.dedup_queue_size}")
 
     # -- 消息 ---------------------------------------------------------------
     def _on_chat_changed(self, chat_title: str) -> None:

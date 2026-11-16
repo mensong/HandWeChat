@@ -3,12 +3,16 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Callable
 
 from handwechat.models import BaseMessage, MessageType
+
+logger = logging.getLogger(__name__)
 
 
 def _now_text() -> str:
@@ -30,6 +34,7 @@ class MessageBuffer:
     def __init__(self, size: int = 5000) -> None:
         self._messages: deque[BufferedMessage] = deque(maxlen=max(1, int(size)))
         self._condition = threading.Condition()
+        self._subscribers: list[Callable[[], None]] = []
         self._cursor = 0
 
     @property
@@ -58,7 +63,32 @@ class MessageBuffer:
             )
             self._messages.append(item)
             self._condition.notify_all()
-            return self._cursor
+            cursor = self._cursor
+            subscribers = tuple(self._subscribers)
+
+        for callback in subscribers:
+            # Subscribers run on the OCR thread; an isolated failure must not
+            # stop message ingestion.
+            try:
+                callback()
+            except Exception:
+                logger.exception("消息缓冲订阅回调执行失败")
+
+        return cursor
+
+    def subscribe(self, callback: Callable[[], None]) -> None:
+        """Register a no-argument callback fired after each buffered message."""
+
+        with self._condition:
+            if callback not in self._subscribers:
+                self._subscribers.append(callback)
+
+    def unsubscribe(self, callback: Callable[[], None]) -> None:
+        with self._condition:
+            try:
+                self._subscribers.remove(callback)
+            except ValueError:
+                pass
 
     def clear(self) -> None:
         """Discard buffered messages while preserving the global cursor."""

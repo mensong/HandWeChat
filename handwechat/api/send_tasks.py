@@ -96,9 +96,7 @@ class SendTaskStore:
             elif task.status != SendTaskStatus.FAILED:
                 task.status = SendTaskStatus.FAILED
                 task.completed_at = _now_text()
-                task.error_code = (
-                    "SEND_VERIFY_FAILED" if "回读" in detail else "SEND_FAILED"
-                )
+                task.error_code = "SEND_FAILED"
                 task.error_message = detail or "发送失败"
             _log_task("completed" if ok else "failed", task)
             return True

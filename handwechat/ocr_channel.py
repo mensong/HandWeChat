@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 import ctypes
 from ctypes import wintypes
 import hashlib
@@ -10,6 +11,7 @@ from dataclasses import dataclass
 from dataclasses import field
 from datetime import datetime, timezone
 import json
+import logging
 from pathlib import Path
 import queue
 import re
@@ -32,6 +34,25 @@ SendStartedCallback = Callable[[str, str], None]
 MessageCallback = Callable[[BaseMessage], None]
 ChatChangedCallback = Callable[[str], None]
 ErrorCallback = Callable[[str, Exception], None]
+
+logger = logging.getLogger("handwechat.ocr")
+
+
+def configure_ocr_logging(log_path: str | Path) -> None:
+    """Attach the UTF-8 file handler used for OCR diagnostics."""
+
+    target = Path(log_path).resolve()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    for handler in logger.handlers:
+        if isinstance(handler, logging.FileHandler) and getattr(
+            handler, "baseFilename", None
+        ) == str(target):
+            return
+    handler = logging.FileHandler(target, encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
+    logger.addHandler(handler)
 
 
 class OcrEngineUnavailableError(HWError):
@@ -88,6 +109,7 @@ class ParsedFrame:
     chat_title: str
     messages: tuple[OcrMessage, ...]
     captured_at: float
+    ocr_ms: float = 0.0
 
 
 @dataclass
@@ -95,21 +117,17 @@ class OcrListenState:
     initialized: bool = False
     last_seq: int = 0
     recent_keys: list[str] = field(default_factory=list)
-    self_texts: list[str] = field(default_factory=list)
     updated_at: str = ""
 
     def __post_init__(self) -> None:
         if self.recent_keys is None:
             self.recent_keys = []
-        if self.self_texts is None:
-            self.self_texts = []
 
     def to_dict(self) -> dict:
         return {
             "initialized": self.initialized,
             "last_seq": self.last_seq,
             "recent_keys": list(self.recent_keys),
-            "self_texts": list(self.self_texts),
             "updated_at": self.updated_at,
         }
 
@@ -119,7 +137,6 @@ class OcrListenState:
             initialized=bool(data.get("initialized", False)),
             last_seq=int(data.get("last_seq") or 0),
             recent_keys=list(data.get("recent_keys") or []),
-            self_texts=list(data.get("self_texts") or []),
             updated_at=str(data.get("updated_at") or ""),
         )
 
@@ -128,12 +145,34 @@ def _now_text() -> str:
     return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
 
 
+def _log_record(**fields) -> str:
+    return json.dumps(fields, ensure_ascii=False, separators=(",", ":"))
+
+
 def _normalize_text(text: str) -> str:
     return re.sub(r"\s+", "", str(text)).strip().lower()
 
 
+_UNKNOWN_SENDER = "对方"
+
+
 def _message_key(message: OcrMessage) -> str:
     return "\x1f".join((message.attr, _normalize_text(message.text)))
+
+
+def _dedup_key(message: OcrMessage) -> str:
+    """Key for the duplicate filter queue.
+
+    The sender is part of the key so that two people saying the same thing in
+    a group are not collapsed into one entry. The parser's placeholder sender
+    carries no information, and using it would only make the key jitter when
+    nickname detection flips between frames, so those fall back to attr+text.
+    """
+
+    parts = [message.attr, _normalize_text(message.text)]
+    if message.sender != _UNKNOWN_SENDER:
+        parts.insert(1, _normalize_text(message.sender))
+    return "\x1f".join(parts)
 
 
 def _frame_signature(
@@ -392,10 +431,10 @@ class OcrSendQueue:
                     self._on_send_started(task_id, text)
                 except Exception:
                     pass
+            detail = ""
             try:
                 self._rate_limiter.wait_one()
                 ok = bool(self._sender(text))
-                detail = "" if ok else "OCR 回读未找到刚发送的消息"
             except Exception as exc:
                 ok = False
                 detail = f"{type(exc).__name__}: {exc}"
@@ -416,10 +455,21 @@ class OcrChannel:
         max_send_per_minute: int = 20,
         state_path: str | Path = "data/ocr_listener_state.json",
         recent_key_limit: int = 128,
-        input_x_ratio: float = 0.50,
-        input_y_ratio: float = 0.905,
-        title_box: tuple[float, float, float, float] = (0.28, 0.03, 0.50, 0.10),
-        chat_box: tuple[float, float, float, float] = (0.12, 0.10, 0.97, 0.88),
+        dedup_queue_size: int = 10,
+        input_x_ratio: float = 0.9352678571428571,
+        input_y_ratio: float = 0.8842592592592593,
+        title_box: tuple[float, float, float, float] = (
+            0.34486607142857145,
+            0.05246913580246913,
+            0.8370535714285714,
+            0.11265432098765432,
+        ),
+        chat_box: tuple[float, float, float, float] = (
+            0.41183035714285715,
+            0.19135802469135801,
+            0.9196428571428571,
+            0.7654320987654321,
+        ),
         on_message: Optional[MessageCallback] = None,
         on_chat_changed: Optional[ChatChangedCallback] = None,
         on_error: Optional[ErrorCallback] = None,
@@ -429,6 +479,9 @@ class OcrChannel:
         self.poll_interval = max(0.5, float(poll_interval))
         self.max_send_per_minute = max(1, int(max_send_per_minute))
         self.recent_key_limit = max(16, int(recent_key_limit))
+        self._dedup_queue_size = max(1, int(dedup_queue_size))
+        self._dedup_keys: deque[str] = deque()
+        self._dedup_filtered_count = 0
         self.input_x_ratio = min(0.99, max(0.01, float(input_x_ratio)))
         self.input_y_ratio = min(0.99, max(0.01, float(input_y_ratio)))
         self.title_box = title_box
@@ -505,11 +558,54 @@ class OcrChannel:
     def parse_queue_size(self) -> int:
         return self._parse_queue.qsize()
 
+    @property
+    def dedup_queue_size(self) -> int:
+        with self._state_lock:
+            return self._dedup_queue_size
+
+    @dedup_queue_size.setter
+    def dedup_queue_size(self, value: int) -> None:
+        size = max(1, int(value))
+        with self._state_lock:
+            self._dedup_queue_size = size
+            while len(self._dedup_keys) > size:
+                self._dedup_keys.popleft()
+
+    def dedup_snapshot(self) -> dict:
+        """Return a read-only view of the duplicate filter queue."""
+
+        with self._state_lock:
+            capacity = self._dedup_queue_size
+            filtered_count = self._dedup_filtered_count
+            keys = list(self._dedup_keys)
+
+        items = []
+        for key in keys:
+            parts = key.split("\x1f")
+            if len(parts) >= 3:
+                sender = parts[1]
+                text = "\x1f".join(parts[2:])
+            else:
+                # Loose keys carry no sender; the parser did not recognise one.
+                sender = ""
+                text = "\x1f".join(parts[1:])
+            items.append({"attr": parts[0], "sender": sender, "text": text})
+        return {
+            "capacity": capacity,
+            "size": len(items),
+            "filtered_count": filtered_count,
+            "items": items,
+        }
+
     def status(self) -> dict:
         with self._status_lock:
             last_frame_signature = self._last_frame_signature
             last_accepted_signature = self._last_accepted_signature
             ocr_skip_identical_count = self._ocr_skip_identical_count
+
+        with self._state_lock:
+            dedup_queue_size = self._dedup_queue_size
+            dedup_filtered_count = self._dedup_filtered_count
 
         return {
             "running": self.running,
@@ -523,6 +619,8 @@ class OcrChannel:
             "last_frame_signature": last_frame_signature,
             "last_accepted_signature": last_accepted_signature,
             "ocr_skip_identical_count": ocr_skip_identical_count,
+            "dedup_queue_size": dedup_queue_size,
+            "dedup_filtered_count": dedup_filtered_count,
             "last_error": self.last_error,
         }
 
@@ -570,28 +668,20 @@ class OcrChannel:
     def send(self, text: str, *, task_id: str) -> None:
         self.send_queue.submit(text, task_id=task_id)
 
-    def send_text(self, text: str, *, verify_timeout: float = 6.0) -> bool:
-        """Paste text into the active chat, press Enter, then verify."""
+    def send_text(self, text: str) -> bool:
+        """Paste text into the active chat and press Enter."""
 
         if not text:
             raise ValueError("发送内容不能为空")
         with self._send_lock:
-            normalized = _normalize_text(text)
-            with self._state_lock:
-                self._state.self_texts = [
-                    item for item in self._state.self_texts if item != normalized
-                ]
-            if not self._confirm_chat():
-                raise RuntimeError(
-                    "无法确认当前微信聊天，请先在微信中打开要发送的聊天"
-                )
-            self._click_input()
+            rect = self._confirm_chat()
+            self._click_input(rect)
             self._clear_input()
             self._set_clipboard_text(text)
             self._paste_clipboard()
             time.sleep(0.15)
             self._press_enter()
-            return self._wait_for_self_message(text, timeout=verify_timeout)
+            return True
 
     def _capture_loop(self) -> None:
         while not self._stop_event.is_set():
@@ -693,7 +783,9 @@ class OcrChannel:
         title_box = _crop_box((width, height), left=self.title_box[0], top=self.title_box[1], right=self.title_box[2], bottom=self.title_box[3])
         chat_box = _crop_box((width, height), left=self.chat_box[0], top=self.chat_box[1], right=self.chat_box[2], bottom=self.chat_box[3])
         title_lines = self._reader.recognize_lines(frame.image.crop(title_box))
+        started_at = time.perf_counter()
         chat_lines = self._reader.recognize_lines(frame.image.crop(chat_box))
+        ocr_ms = (time.perf_counter() - started_at) * 1000
         chat_title = self._select_title(title_lines)
         # Every current chat is parsed with the group layout, because OCR has
         # no reliable signal for whether a private chat will show sender rows.
@@ -707,6 +799,7 @@ class OcrChannel:
             chat_title=chat_title,
             messages=tuple(messages),
             captured_at=frame.captured_at,
+            ocr_ms=ocr_ms,
         )
 
     def _set_last_frame_signature(self, signature: str) -> None:
@@ -803,7 +896,11 @@ class OcrChannel:
                 if center_ratio >= 0.55
                 else MessageAttr.FRIEND
             )
-            sender = "我" if attr == MessageAttr.SELF else nickname_by_cluster.get(index, "对方")
+            sender = (
+                "我"
+                if attr == MessageAttr.SELF
+                else nickname_by_cluster.get(index, _UNKNOWN_SENDER)
+            )
             messages.append(OcrMessage(attr=attr, text=text, sender=sender))
         return messages
 
@@ -908,7 +1005,52 @@ class OcrChannel:
         horizontal_gap = max(0, max(line.x0, other.x0) - min(line.x1, other.x1))
         return horizontal_gap <= max(32.0, 2.5 * max(line.height, other.height))
 
+    def _remember_dedup_keys(self, messages: Sequence[OcrMessage]) -> None:
+        for message in messages:
+            self._dedup_keys.append(_dedup_key(message))
+        while len(self._dedup_keys) > self._dedup_queue_size:
+            self._dedup_keys.popleft()
+
+    def _filter_duplicate_messages(
+        self, messages: Sequence[OcrMessage]
+    ) -> list[OcrMessage]:
+        """Split messages into kept and dropped against the recent queue.
+
+        Every queued key suppresses exactly one message, so an identical
+        message sent twice for real still gets through, while the same message
+        re-read from the screen after OCR jitter does not.
+        """
+
+        if not messages:
+            return [], []
+
+        with self._state_lock:
+            queued = list(self._dedup_keys)
+            consumed = [False] * len(queued)
+            kept: list[OcrMessage] = []
+            dropped: list[OcrMessage] = []
+            for message in messages:
+                key = _dedup_key(message)
+                for index in range(len(queued) - 1, -1, -1):
+                    if not consumed[index] and queued[index] == key:
+                        consumed[index] = True
+                        self._dedup_filtered_count += 1
+                        dropped.append(message)
+                        break
+                else:
+                    kept.append(message)
+
+            self._remember_dedup_keys(kept)
+            return kept, dropped
+
     def _consume_frame(self, frame: ParsedFrame) -> None:
+        started_at = time.perf_counter()
+        emitted: list[tuple[int, OcrMessage]] = []
+        filtered: list[OcrMessage] = []
+        overlap_length = 0
+        candidate_count = 0
+        seeded = False
+
         with self._status_lock:
             previous_title = self._chat_title
             if frame.chat_title:
@@ -922,48 +1064,110 @@ class OcrChannel:
             self._emit_chat_changed(frame.chat_title)
 
         keys = [_message_key(message) for message in frame.messages]
-        new_messages: list[OcrMessage] = []
         with self._state_lock:
             if title_changed:
                 self._state.initialized = False
                 self._state.recent_keys = []
+                self._dedup_keys.clear()
 
             if not self._state.initialized:
                 self._state.initialized = True
+                seeded = True
                 self._state.recent_keys = keys[-self.recent_key_limit :]
+                self._remember_dedup_keys(frame.messages)
                 self._state.updated_at = _now_text()
                 self._save_state_locked()
-                return
-
-            overlap_length = _overlap_length(self._state.recent_keys, keys)
-            if overlap_length:
-                new_messages = list(frame.messages[overlap_length:])
             else:
-                new_messages = list(frame.messages)
+                overlap_length = _overlap_length(self._state.recent_keys, keys)
+                if overlap_length:
+                    candidates = list(frame.messages[overlap_length:])
+                else:
+                    candidates = list(frame.messages)
+                candidate_count = len(candidates)
 
-            if new_messages:
-                for message in new_messages:
-                    self._state.last_seq += 1
-                    base = TextMessage(
-                        sender=message.sender,
-                        content=message.text,
-                        attr=message.attr,
-                        type=MessageType.TEXT,
-                        index=self._state.last_seq,
+                new_messages, filtered = self._filter_duplicate_messages(candidates)
+
+                if new_messages:
+                    for message in new_messages:
+                        self._state.last_seq += 1
+                        base = TextMessage(
+                            sender=message.sender,
+                            content=message.text,
+                            attr=message.attr,
+                            type=MessageType.TEXT,
+                            index=self._state.last_seq,
+                        )
+                        base.extra["listen_time"] = _now_text()
+                        emitted.append((self._state.last_seq, message))
+                        self._emit_message(base)
+                    self._state.recent_keys.extend(
+                        _message_key(message) for message in new_messages
                     )
-                    base.extra["listen_time"] = _now_text()
-                    if message.attr == MessageAttr.SELF:
-                        self._state.self_texts.append(_normalize_text(message.text))
-                        self._state.self_texts = self._state.self_texts[-32:]
-                    self._emit_message(base)
-                self._state.recent_keys.extend(
-                    _message_key(message) for message in new_messages
+                    self._state.recent_keys = self._state.recent_keys[
+                        -self.recent_key_limit :
+                    ]
+                    self._state.updated_at = _now_text()
+                    self._save_state_locked()
+
+        for seq, message in emitted:
+            logger.info(
+                _log_record(
+                    event="emit",
+                    seq=seq,
+                    attr=message.attr,
+                    sender=message.sender,
+                    text=message.text,
                 )
-                self._state.recent_keys = self._state.recent_keys[
-                    -self.recent_key_limit :
-                ]
-                self._state.updated_at = _now_text()
-                self._save_state_locked()
+            )
+        for message in filtered:
+            logger.info(
+                _log_record(
+                    event="dedup",
+                    attr=message.attr,
+                    sender=message.sender,
+                    text=message.text,
+                )
+            )
+        self._log_frame(
+            frame,
+            parsed=len(frame.messages),
+            overlap=overlap_length,
+            candidates=candidate_count,
+            filtered=len(filtered),
+            emitted=len(emitted),
+            seeded=seeded,
+            elapsed_ms=(time.perf_counter() - started_at) * 1000,
+        )
+
+    def _log_frame(
+        self,
+        frame: ParsedFrame,
+        *,
+        parsed: int,
+        overlap: int,
+        candidates: int,
+        filtered: int,
+        emitted: int,
+        seeded: bool,
+        elapsed_ms: float,
+    ) -> None:
+        if not logger.isEnabledFor(logging.INFO):
+            return
+        payload = {
+            "event": "frame",
+            "title": frame.chat_title,
+            "parsed": parsed,
+            "overlap": overlap,
+            "candidates": candidates,
+            "dedup": filtered,
+            "emitted": emitted,
+            "ocr_ms": round(frame.ocr_ms, 1),
+            "elapsed_ms": round(elapsed_ms, 1),
+            "age_ms": round((time.time() - frame.captured_at) * 1000, 1),
+        }
+        if seeded:
+            payload["seeded"] = True
+        logger.info(_log_record(**payload))
 
     def _emit_message(self, message: BaseMessage) -> None:
         for callback in tuple(self._message_callbacks):
@@ -981,6 +1185,7 @@ class OcrChannel:
 
     def _report_error(self, context: str, exc: Exception) -> None:
         text = f"{context}: {type(exc).__name__}: {exc}"
+        logger.warning(_log_record(event="error", context=context, error=text))
         self._set_status_error(text)
         for callback in tuple(self._error_callbacks):
             try:
@@ -1010,54 +1215,18 @@ class OcrChannel:
             encoding="utf-8",
         )
 
-    def _wait_for_self_message(self, text: str, *, timeout: float) -> bool:
-        normalized = _normalize_text(text)
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            with self._state_lock:
-                if normalized in self._state.self_texts:
-                    return True
-            time.sleep(0.2)
-        return False
+    def _confirm_chat(self) -> tuple[int, int, int, int]:
+        """Locate the WeChat window and bring it to the front."""
 
-    def _confirm_chat(self, timeout: float = 6.0) -> bool:
         located = _find_wechat_window()
         if located is None:
             raise RuntimeError("未找到微信主窗口")
         hwnd, rect = located
         self._focus_window(hwnd)
         time.sleep(0.15)
+        return rect
 
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            image = self._grab_window(rect)
-            if image is None:
-                return False
-            width, height = image.size
-            title_box = _crop_box(
-                (width, height),
-                left=self.title_box[0],
-                top=self.title_box[1],
-                right=self.title_box[2],
-                bottom=self.title_box[3],
-            )
-            title_lines = self._reader.recognize_lines(image.crop(title_box))
-            title = self._select_title(title_lines)
-            if title:
-                with self._status_lock:
-                    self._chat_title = title
-                    self._chat_type = "group"
-                return True
-            time.sleep(0.4)
-        return False
-
-    def _click_input(self) -> None:
-        located = _find_wechat_window()
-        if located is None:
-            raise RuntimeError("未找到微信主窗口")
-        hwnd, rect = located
-        self._focus_window(hwnd)
-        time.sleep(0.15)
+    def _click_input(self, rect: tuple[int, int, int, int]) -> None:
         left, top, right, bottom = rect
         width = right - left
         height = bottom - top
@@ -1074,12 +1243,6 @@ class OcrChannel:
 
     def _press_enter(self) -> None:
         self._tap(0x0D)  # Enter
-
-    def _grab_window(self, rect: tuple[int, int, int, int]) -> Image.Image | None:
-        left, top, right, bottom = rect
-        if right <= left or bottom <= top:
-            return None
-        return ImageGrab.grab(bbox=rect, all_screens=True)
 
     def _focus_window(self, hwnd: int) -> None:
         user32 = ctypes.windll.user32

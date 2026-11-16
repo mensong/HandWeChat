@@ -43,10 +43,20 @@ def _ratio_box(value: Any, name: str) -> RatioBox:
 
 @dataclass(frozen=True)
 class OcrCalibration:
-    input_x_ratio: float = 0.50
-    input_y_ratio: float = 0.905
-    title_box: RatioBox = (0.28, 0.03, 0.50, 0.10)
-    chat_box: RatioBox = (0.12, 0.10, 0.97, 0.88)
+    input_x_ratio: float = 0.9352678571428571
+    input_y_ratio: float = 0.8842592592592593
+    title_box: RatioBox = (
+        0.34486607142857145,
+        0.05246913580246913,
+        0.8370535714285714,
+        0.11265432098765432,
+    )
+    chat_box: RatioBox = (
+        0.41183035714285715,
+        0.19135802469135801,
+        0.9196428571428571,
+        0.7654320987654321,
+    )
     updated_at: str = ""
 
     def to_dict(self) -> dict:

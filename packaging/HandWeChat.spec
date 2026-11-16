@@ -13,7 +13,7 @@ common_datas = [
 common_binaries = []
 common_hiddenimports = ["handwechat.ocr_channel"]
 
-for package_name in ("paddle", "paddleocr", "fastapi", "uvicorn"):
+for package_name in ("paddle", "paddleocr", "fastapi", "uvicorn", "websockets"):
     datas, binaries, hiddenimports = collect_all(package_name)
     common_datas.extend(datas)
     common_binaries.extend(binaries)

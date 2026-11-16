@@ -3,91 +3,90 @@
 
 from __future__ import annotations
 
+import logging
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from fastapi.testclient import TestClient
 
-import handwechat.api.service as api_service
+import handwechat.ocr_channel as ocr_channel
 from handwechat.api.app import create_app
 from handwechat.api.config import ApiConfig
 from handwechat.api.service import ApiService
 
 
-class FakeWeChat:
-    def IsOnline(self) -> bool:
-        return True
+class FakeOcrChannel:
+    """Gate every send so the test can observe the queued state."""
 
-    @property
-    def pid(self) -> int:
-        return 12345
-
-    @property
-    def hwnd(self) -> int:
-        return 0xE30D24
-
-
-class FakeSendQueue:
-    def __init__(self, runtime) -> None:
-        self.runtime = runtime
-        self.items: list[str] = []
-
-    @property
-    def size(self) -> int:
-        return len(self.items)
-
-    def submit(self, session: str, text: str, *, task_id: str | None = None) -> str:
-        task_id = task_id or f"fake_{len(self.items) + 1}"
-        self.items.append(task_id)
-
-        def run() -> None:
-            time.sleep(0.05)
-            if task_id in self.items:
-                self.items.remove(task_id)
-            self.runtime.kwargs["on_send_started"](task_id, session, text)
-            ok = session != "失败会话"
-            self.runtime.kwargs["on_send_task_completed"](
-                task_id,
-                session,
-                text,
-                ok,
-                "" if ok else "发送后未回读到消息",
-            )
-
-        threading.Thread(target=run, daemon=True).start()
-        return task_id
-
-
-class FakeRuntime:
-    def __init__(self, instance, **kwargs) -> None:
+    def __init__(self, **kwargs) -> None:
         self.kwargs = kwargs
-        self.send_queue = FakeSendQueue(self)
-        self.started_send_queue = False
+        self.running_flag = False
         self.stopped = False
+        self.send_queue = SimpleNamespace(size=0)
+        self.gates: dict[str, threading.Event] = {}
 
     @property
-    def listener_running(self) -> bool:
-        return False
+    def running(self) -> bool:
+        return self.running_flag
 
     @property
-    def send_queue_size(self) -> int:
-        return self.send_queue.size
+    def last_error(self) -> None:
+        return None
 
-    def start_send_queue(self) -> None:
-        self.started_send_queue = True
+    @property
+    def chat_title(self) -> str:
+        return "文件传输助手"
 
-    def start_listener(self) -> None:
-        pass
+    @property
+    def chat_type(self) -> str | None:
+        return "friend"
 
-    def stop_listener(self) -> None:
-        pass
+    def start(self) -> None:
+        self.running_flag = True
 
-    def shutdown(self) -> None:
+    def stop(self, timeout: float = 4.0) -> None:
+        self.running_flag = False
         self.stopped = True
+
+    def status(self) -> dict:
+        return {
+            "running": self.running_flag,
+            "chat_title": self.chat_title,
+            "chat_type": self.chat_type,
+            "send_queue_size": self.send_queue.size,
+            "last_error": self.last_error,
+        }
+
+    def send(self, text: str, *, task_id: str | None = None) -> None:
+        gate = threading.Event()
+        self.gates[task_id] = gate
+        threading.Thread(
+            target=self._deliver,
+            args=(task_id, text, gate),
+            daemon=True,
+        ).start()
+
+    def release(self, task_id: str) -> None:
+        self.gates[task_id].set()
+
+    def _deliver(
+        self, task_id: str, text: str, gate: threading.Event
+    ) -> None:
+        gate.wait(3)
+        ok = text != "M4 failure"
+        self.kwargs["on_send_started"](task_id, text)
+        self.kwargs["on_send_completed"](
+            task_id,
+            text,
+            ok,
+            "" if ok else "RuntimeError: 未找到微信主窗口",
+        )
 
 
 def wait_task(client: TestClient, task_id: str) -> dict:
@@ -103,63 +102,91 @@ def wait_task(client: TestClient, task_id: str) -> dict:
     raise AssertionError(f"任务未在 3 秒内完成：{last}")
 
 
+def close_loggers() -> None:
+    for logger_name in (
+        "handwechat.api.access",
+        "handwechat.api.send_tasks",
+        "handwechat.ocr",
+    ):
+        logger = logging.getLogger(logger_name)
+        for handler in logger.handlers:
+            handler.close()
+        logger.handlers.clear()
+
+
 def main() -> None:
-    api_service.get_process_version = lambda pid: api_service.REQUIRED_WECHAT_VERSION
-    runtime = None
+    ocr_channel._find_wechat_window = lambda: (0xE30D24, (0, 0, 100, 100))
 
-    def runtime_factory(instance, **kwargs):
-        nonlocal runtime
-        runtime = FakeRuntime(instance, **kwargs)
-        return runtime
+    with tempfile.TemporaryDirectory() as temp_dir:
+        config = ApiConfig(log_dir=temp_dir)
+        channels: list[FakeOcrChannel] = []
 
-    service = ApiService(
-        ApiConfig(),
-        wechat_factory=lambda: FakeWeChat(),
-        runtime_factory=runtime_factory,
-    )
+        def channel_factory(**kwargs) -> FakeOcrChannel:
+            channel = FakeOcrChannel(**kwargs)
+            channels.append(channel)
+            return channel
 
-    with TestClient(create_app(config=ApiConfig(), service=service)) as client:
-        assert runtime is not None
-        assert runtime.started_send_queue is True
+        service = ApiService(config, ocr_channel_factory=channel_factory)
 
-        queued = client.post(
-            "/api/v1/send",
-            json={"session": "文件传输助手", "text": "M4 API smoke"},
-        )
-        assert queued.status_code == 202, queued.text
-        queued_payload = queued.json()
-        assert queued_payload["status"] == "queued"
-        assert queued_payload["task_id"].startswith("send_")
+        with TestClient(create_app(config=config, service=service)) as client:
+            not_running = client.post("/api/v1/send", json={"text": "M4 success"})
+            assert not_running.status_code == 409, not_running.text
+            assert not_running.json()["code"] == "OCR_CHANNEL_NOT_RUNNING"
 
-        success = wait_task(client, queued_payload["task_id"])
-        assert success["session"] == "文件传输助手"
-        assert success["text"] == "M4 API smoke"
-        assert success["completed_at"] is not None
-        assert success["error_code"] is None
-        assert success["error_message"] is None
+            started = client.post("/api/v1/listener/start")
+            assert started.status_code == 200, started.text
+            assert len(channels) == 1
+            channel = channels[0]
 
-        failed_queued = client.post(
-            "/api/v1/send",
-            json={"session": "失败会话", "text": "M4 failed smoke"},
-        )
-        assert failed_queued.status_code == 202, failed_queued.text
-        failed = wait_task(client, failed_queued.json()["task_id"])
-        assert failed["status"] == "failed"
-        assert failed["error_code"] == "SEND_VERIFY_FAILED"
-        assert failed["error_message"] == "发送后未回读到消息"
+            queued = client.post("/api/v1/send", json={"text": "M4 success"})
+            assert queued.status_code == 202, queued.text
+            queued_payload = queued.json()
+            assert queued_payload["status"] == "queued"
+            success_task_id = queued_payload["task_id"]
+            assert success_task_id.startswith("send_")
 
-        missing = client.get("/api/v1/send/send_not_exists")
-        assert missing.status_code == 404, missing.text
-        assert missing.json()["code"] == "SEND_TASK_NOT_FOUND"
+            pending = client.get(f"/api/v1/send/{success_task_id}")
+            assert pending.status_code == 200, pending.text
+            assert pending.json()["status"] == "queued"
+            assert pending.json()["text"] == "M4 success"
+            assert pending.json()["completed_at"] is None
+            assert (
+                client.get("/api/v1/health").json()["send_task_active"] == 1
+            )
 
-        invalid = client.post(
-            "/api/v1/send",
-            json={"session": "文件传输助手", "text": ""},
-        )
-        assert invalid.status_code == 422, invalid.text
-        assert invalid.json()["code"] == "INVALID_REQUEST"
+            channel.release(success_task_id)
+            success = wait_task(client, success_task_id)
+            assert success["status"] == "success"
+            assert success["completed_at"] is not None
+            assert success["error_code"] is None
+            assert success["error_message"] is None
 
-    assert runtime is not None and runtime.stopped is True
+            failed_queued = client.post(
+                "/api/v1/send", json={"text": "M4 failure"}
+            )
+            assert failed_queued.status_code == 202, failed_queued.text
+            failed_task_id = failed_queued.json()["task_id"]
+            channel.release(failed_task_id)
+
+            failed = wait_task(client, failed_task_id)
+            assert failed["status"] == "failed"
+            assert failed["error_code"] == "SEND_FAILED"
+            assert failed["error_message"] == "RuntimeError: 未找到微信主窗口"
+
+            assert client.get("/api/v1/health").json()["send_task_active"] == 0
+
+            missing = client.get("/api/v1/send/send_not_exists")
+            assert missing.status_code == 404, missing.text
+            assert missing.json()["code"] == "SEND_TASK_NOT_FOUND"
+
+            invalid = client.post("/api/v1/send", json={"text": ""})
+            assert invalid.status_code == 422, invalid.text
+            assert invalid.json()["code"] == "INVALID_REQUEST"
+
+        assert channel.stopped is True
+
+        close_loggers()
+
     print("M4 API smoke: ok")
 
 

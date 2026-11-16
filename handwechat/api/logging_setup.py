@@ -20,6 +20,7 @@ def configure_api_logging(config: ApiConfig) -> None:
     for logger_name, filename in (
         ("handwechat.api.access", config.access_log_file),
         ("handwechat.api.send_tasks", config.send_task_log_file),
+        ("handwechat.ocr", config.ocr_log_file),
     ):
         logger = logging.getLogger(logger_name)
         logger.setLevel(logging.INFO)

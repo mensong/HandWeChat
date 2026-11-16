@@ -4,9 +4,12 @@
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import ctypes
 from ctypes import wintypes
+from datetime import datetime
+from pathlib import Path
 from typing import Callable, Optional
 
 from handwechat.api.config import ApiConfig
@@ -23,6 +26,47 @@ class SendTaskNotFoundError(HWError):
 
 class OcrChannelNotRunningError(HWError):
     """OCR 通道未启动。"""
+
+
+class LogNotFoundError(HWError):
+    """日志文件不存在或无法读取。"""
+
+
+_LOG_SCAN_BYTES = 2 * 1024 * 1024
+_LOG_MAX_LINES = 5000
+
+
+def _tail_lines(
+    path: Path, *, line_limit: int, keyword: str
+) -> tuple[list[str], int, int, bool, int]:
+    """Read the tail of a log file and optionally keep matching lines.
+
+    Returns (lines, scanned_lines, matched_lines, truncated, size). Only the
+    last 2 MB are read so a large log cannot exhaust memory.
+    """
+
+    try:
+        with path.open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            size = handle.tell()
+            start = max(0, size - _LOG_SCAN_BYTES)
+            handle.seek(start)
+            raw = handle.read()
+    except OSError as exc:
+        raise LogNotFoundError(f"日志文件读取失败：{path.name}") from exc
+
+    truncated = start > 0
+    lines = raw.decode("utf-8", errors="replace").splitlines()
+    if truncated and lines:
+        # The first line is very likely cut in half by the byte window.
+        lines = lines[1:]
+    scanned = len(lines)
+
+    if keyword:
+        needle = keyword.casefold()
+        lines = [line for line in lines if needle in line.casefold()]
+    matched = len(lines)
+    return lines[-line_limit:], scanned, matched, truncated, size
 
 
 class ApiService:
@@ -66,9 +110,17 @@ class ApiService:
 
         channel = self.ocr_channel
         last_error = self._last_error
+        dedup_queue_size = 0
+        dedup_filtered_count = 0
         try:
             if channel is not None and channel.last_error:
                 last_error = channel.last_error
+            if channel is not None:
+                channel_status = channel.status()
+                dedup_queue_size = int(channel_status.get("dedup_queue_size") or 0)
+                dedup_filtered_count = int(
+                    channel_status.get("dedup_filtered_count") or 0
+                )
         except Exception:
             pass
 
@@ -88,6 +140,8 @@ class ApiService:
             "send_task_active": self.send_tasks.active_count(),
             "poll_interval": self.config.ocr_poll_interval,
             "max_send_per_minute": self.config.ocr_max_send_per_minute,
+            "dedup_queue_size": dedup_queue_size,
+            "dedup_filtered_count": dedup_filtered_count,
             "last_error": last_error,
         }
 
@@ -115,6 +169,85 @@ class ApiService:
         timeout: float = 0.0,
     ) -> tuple[list[BufferedMessage], int, bool]:
         return self.message_buffer.get_after(cursor, limit=limit, timeout=timeout)
+
+    @property
+    def message_cursor(self) -> int:
+        """Latest process-wide cursor; a WebSocket client starts from here."""
+
+        return self.message_buffer.latest_cursor
+
+    def subscribe_messages(self, callback: Callable[[], None]) -> None:
+        self.message_buffer.subscribe(callback)
+
+    def unsubscribe_messages(self, callback: Callable[[], None]) -> None:
+        self.message_buffer.unsubscribe(callback)
+
+    def list_logs(self) -> dict:
+        log_dir = Path(self.config.log_dir).resolve()
+        try:
+            entries = sorted(log_dir.iterdir())
+        except OSError:
+            entries = []
+
+        files = []
+        for entry in entries:
+            try:
+                if not entry.is_file():
+                    continue
+                stat = entry.stat()
+            except OSError:
+                continue
+            files.append(
+                {
+                    "name": entry.name,
+                    "size": int(stat.st_size),
+                    "updated_at": datetime.fromtimestamp(stat.st_mtime)
+                    .astimezone()
+                    .isoformat(timespec="seconds"),
+                }
+            )
+        return {"log_dir": str(log_dir), "files": files}
+
+    def read_log(self, name: str, *, lines: int = 500, keyword: str = "") -> dict:
+        path = self._log_path(name)
+        limit = max(1, min(int(lines), _LOG_MAX_LINES))
+        rows, scanned, matched, truncated, size = _tail_lines(
+            path,
+            line_limit=limit,
+            keyword=str(keyword).strip(),
+        )
+        return {
+            "name": path.name,
+            "size": size,
+            "scanned_lines": scanned,
+            "matched_lines": matched,
+            "truncated": truncated,
+            "lines": rows,
+        }
+
+    def _log_path(self, name: str) -> Path:
+        log_dir = Path(self.config.log_dir).resolve()
+        try:
+            candidate = (log_dir / name).resolve()
+        except OSError as exc:
+            raise LogNotFoundError(f"日志文件不存在：{name!r}") from exc
+        if candidate.parent != log_dir or not candidate.is_file():
+            raise LogNotFoundError(f"日志文件不存在：{name!r}")
+        return candidate
+
+    def get_dedup_queue(self) -> dict:
+        channel = self.ocr_channel
+        if channel is None:
+            return {
+                "running": False,
+                "capacity": self.config.ocr_dedup_queue_size,
+                "size": 0,
+                "filtered_count": 0,
+                "items": [],
+            }
+        snapshot = channel.dedup_snapshot()
+        snapshot["running"] = bool(channel.running)
+        return snapshot
 
     def send(self, text: str) -> SendTask:
         channel = self._require_ocr_channel()
@@ -148,6 +281,7 @@ class ApiService:
             channel = factory(
                 poll_interval=self.config.ocr_poll_interval,
                 max_send_per_minute=self.config.ocr_max_send_per_minute,
+                dedup_queue_size=self.config.ocr_dedup_queue_size,
                 state_path=app_data_path("ocr_listener_state.json"),
                 input_x_ratio=calibration.input_x_ratio,
                 input_y_ratio=calibration.input_y_ratio,
@@ -192,6 +326,8 @@ class ApiService:
                 "last_frame_signature": None,
                 "last_accepted_signature": None,
                 "ocr_skip_identical_count": 0,
+                "dedup_queue_size": self.config.ocr_dedup_queue_size,
+                "dedup_filtered_count": 0,
                 "last_error": None,
             }
         return channel.status()

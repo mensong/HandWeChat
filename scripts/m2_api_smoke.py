@@ -1,119 +1,98 @@
 # -*- coding: utf-8 -*-
-"""不依赖真实微信的 M2 HTTP API 冒烟测试。"""
+"""不依赖真实微信的 M2 HTTP API 冒烟测试：健康检查、窗口附着与错误码。"""
 
 from __future__ import annotations
 
+import logging
 import sys
+import tempfile
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from dataclasses import dataclass
 from fastapi.testclient import TestClient
 
-import handwechat.api.service as api_service
+import handwechat.ocr_channel as ocr_channel
 from handwechat.api.app import create_app
 from handwechat.api.config import ApiConfig
 from handwechat.api.service import ApiService
 
-class FakeRuntime:
-    def __init__(self) -> None:
-        self.started = False
-        self.shutdown_count = 0
 
-    @property
-    def listener_running(self) -> bool:
-        return False
-
-    @property
-    def send_queue_size(self) -> int:
-        return 0
-
-    def start_send_queue(self) -> None:
-        self.started = True
-
-    def start_listener(self) -> None:
-        pass
-
-    def stop_listener(self) -> None:
-        pass
-
-    def shutdown(self) -> None:
-        self.shutdown_count += 1
+HWND = 0xE30D24
 
 
-class FakeWeChat:
-    def __init__(self) -> None:
-        self.online = True
-
-    def IsOnline(self) -> bool:
-        return self.online
-
-    @property
-    def pid(self) -> int:
-        return 12345
-
-    @property
-    def hwnd(self) -> int:
-        return 0xE30D24
-
-    def GetSession(self, max_sessions: int = 100):
-        @dataclass
-        class Session:
-            name: str
-            type: str
-            is_new: bool
-            unread_count: int
-            preview: str
-            time_raw: str
-
-        return [
-            Session(
-                name="888 种田大队",
-                type="group",
-                is_new=True,
-                unread_count=2,
-                preview="还有不要钱的？",
-                time_raw="12:00",
-            )
-        ]
+def close_loggers() -> None:
+    for logger_name in (
+        "handwechat.api.access",
+        "handwechat.api.send_tasks",
+        "handwechat.ocr",
+    ):
+        logger = logging.getLogger(logger_name)
+        for handler in logger.handlers:
+            handler.close()
+        logger.handlers.clear()
 
 
 def main() -> None:
-    api_service.get_process_version = lambda pid: api_service.REQUIRED_WECHAT_VERSION
-    wx = FakeWeChat()
-    runtime = FakeRuntime()
-    service = ApiService(
-        ApiConfig(),
-        wechat_factory=lambda: wx,
-        runtime_factory=lambda instance, **kwargs: runtime,
-    )
+    with tempfile.TemporaryDirectory() as temp_dir:
+        config = ApiConfig(log_dir=temp_dir)
 
-    with TestClient(create_app(config=ApiConfig(), service=service)) as client:
-        health = client.get("/api/v1/health")
-        assert health.status_code == 200
-        payload = health.json()
-        assert payload["status"] == "ok"
-        assert payload["online"] is True
-        assert payload["version_baseline_matched"] is True
+        ocr_channel._find_wechat_window = lambda: None
+        service = ApiService(config)
 
-        attach = client.post("/api/v1/attach")
-        assert attach.status_code == 200
-        assert attach.json()["wechat_hwnd"] == "0xe30d24"
+        with TestClient(create_app(config=config, service=service)) as client:
+            health = client.get("/api/v1/health")
+            assert health.status_code == 200, health.text
+            payload = health.json()
+            assert payload["status"] == "offline"
+            assert payload["online"] is False
+            assert payload["attached"] is False
+            assert payload["listener_running"] is False
+            assert payload["chat_title"] == ""
+            assert payload["chat_type"] is None
+            assert payload["send_task_active"] == 0
 
-        sessions = client.get("/api/v1/sessions")
-        assert sessions.status_code == 200
-        item = sessions.json()["items"][0]
-        assert item["name"] == "888 种田大队"
-        assert item["type"] == "group"
-        assert item["unread"] is True
+            attach = client.post("/api/v1/attach")
+            assert attach.status_code == 409, attach.text
+            assert attach.json()["code"] == "WECHAT_OFFLINE"
 
-        wx.online = False
-        offline = client.get("/api/v1/sessions")
-        assert offline.status_code == 409
-        assert offline.json()["code"] == "WECHAT_OFFLINE"
+            start = client.post("/api/v1/listener/start")
+            assert start.status_code == 409, start.text
+            assert start.json()["code"] == "WECHAT_OFFLINE"
 
-    assert runtime.started is True
-    assert runtime.shutdown_count >= 2
+            console = client.get("/")
+            assert console.status_code == 200
+            assert "text/html" in console.headers["content-type"]
+
+            missing = client.get("/api/v1/nope")
+            assert missing.status_code == 404, missing.text
+            assert missing.json()["code"] == "NOT_FOUND"
+
+            wrong_method = client.get("/api/v1/send")
+            assert wrong_method.status_code == 405, wrong_method.text
+            assert wrong_method.json()["code"] == "METHOD_NOT_ALLOWED"
+
+            invalid_cursor = client.get("/api/v1/messages?cursor=-1")
+            assert invalid_cursor.status_code == 422, invalid_cursor.text
+            assert invalid_cursor.json()["code"] == "INVALID_REQUEST"
+
+            ocr_channel._find_wechat_window = lambda: (HWND, (0, 0, 100, 100))
+
+            health = client.get("/api/v1/health")
+            assert health.status_code == 200, health.text
+            payload = health.json()
+            assert payload["status"] == "ok"
+            assert payload["online"] is True
+            assert payload["attached"] is True
+            assert payload["wechat_hwnd"] == "0xe30d24"
+
+            attach = client.post("/api/v1/attach")
+            assert attach.status_code == 200, attach.text
+            assert attach.json()["status"] == "attached"
+            assert attach.json()["wechat_hwnd"] == "0xe30d24"
+
+        close_loggers()
+
     print("M2 API smoke: ok")
 
 

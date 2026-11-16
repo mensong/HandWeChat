@@ -209,6 +209,25 @@
 
     .panel-title { margin: 0; font-size: 15px; color: var(--text); }
 
+    .panel-tools {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .mode-select {
+      min-width: 0;
+      padding: 5px 8px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--surface);
+      color: var(--text);
+      font: inherit;
+      font-size: 12px;
+    }
+
     .message-list {
       min-height: 0;
       overflow: auto;
@@ -390,6 +409,100 @@
 
     .error-banner.show { display: block; }
 
+    .modal {
+      position: fixed;
+      inset: 0;
+      z-index: 40;
+      display: grid;
+      place-items: center;
+      padding: 20px;
+    }
+
+    .modal[hidden] { display: none; }
+
+    .modal-backdrop {
+      position: absolute;
+      inset: 0;
+      background: rgba(20, 28, 34, 0.38);
+    }
+
+    .modal-panel {
+      position: relative;
+      display: grid;
+      grid-template-rows: auto auto minmax(0, 1fr);
+      width: min(1060px, 100%);
+      height: min(740px, 100%);
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .modal-panel .panel-head {
+      flex-wrap: wrap;
+    }
+
+    .modal-panel .panel-title {
+      flex: none;
+      white-space: nowrap;
+    }
+
+    .log-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex: 1;
+      justify-content: flex-end;
+      flex-wrap: wrap;
+    }
+
+    .log-toolbar select {
+      min-width: 0;
+      padding: 7px 9px;
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      background: var(--surface);
+      color: var(--text);
+      font: inherit;
+    }
+
+    #log-keyword { width: 190px; padding: 7px 9px; }
+
+    .log-auto {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      color: var(--text-muted);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+
+    .log-auto input[type="checkbox"] {
+      min-width: 0;
+      margin: 0;
+      padding: 0;
+      border: 0;
+    }
+
+    .log-meta {
+      padding: 8px 16px;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface-muted);
+      color: var(--text-muted);
+      font-size: 12px;
+    }
+
+    .log-body {
+      margin: 0;
+      padding: 12px 16px 16px;
+      overflow: auto;
+      font-family: Consolas, "Cascadia Mono", monospace;
+      font-size: 12px;
+      line-height: 1.55;
+      white-space: pre;
+    }
+
     @media (max-width: 860px) {
       .app { padding: 12px; }
       .workspace { grid-template-columns: 1fr; }
@@ -419,6 +532,9 @@
         </button>
         <button id="btn-stop" class="icon-button stop" type="button" title="暂停 OCR 监听" aria-label="暂停 OCR 监听">
           <i data-lucide="square"></i>
+        </button>
+        <button id="btn-logs" class="icon-button" type="button" title="查看日志" aria-label="查看日志">
+          <i data-lucide="scroll-text"></i>
         </button>
         <button id="btn-refresh" class="icon-button" type="button" title="立即刷新状态和消息" aria-label="立即刷新状态和消息">
           <i data-lucide="refresh-cw"></i>
@@ -451,7 +567,14 @@
       <section class="panel">
         <div class="panel-head">
           <h2 class="panel-title">消息</h2>
-          <span id="message-count" class="status-pill"><span class="dot"></span>0 条</span>
+          <div class="panel-tools">
+            <select id="message-mode" class="mode-select" aria-label="消息获取模式" title="消息获取模式">
+              <option value="ws">WebSocket</option>
+              <option value="http">HTTP 轮询</option>
+            </select>
+            <span id="message-mode-status" class="status-pill"><span class="dot"></span>连接中</span>
+            <span id="message-count" class="status-pill"><span class="dot"></span>0 条</span>
+          </div>
         </div>
         <div id="message-list" class="message-list">
           <div class="empty">启动 OCR 监听后显示当前聊天中的新文本消息</div>
@@ -490,6 +613,33 @@
     </main>
   </div>
 
+  <div id="log-modal" class="modal" hidden>
+    <div id="log-backdrop" class="modal-backdrop"></div>
+    <section class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="log-title">
+      <div class="panel-head">
+        <h2 class="panel-title" id="log-title">日志</h2>
+        <div class="log-toolbar">
+          <select id="log-file" aria-label="选择日志文件"></select>
+          <select id="log-lines" aria-label="显示行数">
+            <option value="200">200 行</option>
+            <option value="500" selected>500 行</option>
+            <option value="2000">2000 行</option>
+          </select>
+          <input id="log-keyword" type="text" placeholder="关键字过滤" aria-label="关键字过滤">
+          <label class="log-auto"><input id="log-auto" type="checkbox">自动刷新</label>
+          <button id="btn-log-refresh" class="icon-button" type="button" title="刷新日志" aria-label="刷新日志">
+            <i data-lucide="refresh-cw"></i>
+          </button>
+          <button id="btn-log-close" class="icon-button" type="button" title="关闭日志" aria-label="关闭日志">
+            <i data-lucide="x"></i>
+          </button>
+        </div>
+      </div>
+      <div id="log-meta" class="log-meta">正在加载日志列表…</div>
+      <pre id="log-body" class="log-body"></pre>
+    </section>
+  </div>
+
   <script>
     "use strict";
 
@@ -498,12 +648,25 @@
       start: document.getElementById("btn-start"),
       stop: document.getElementById("btn-stop"),
       refresh: document.getElementById("btn-refresh"),
+      logs: document.getElementById("btn-logs"),
+      logModal: document.getElementById("log-modal"),
+      logBackdrop: document.getElementById("log-backdrop"),
+      logFile: document.getElementById("log-file"),
+      logLines: document.getElementById("log-lines"),
+      logKeyword: document.getElementById("log-keyword"),
+      logAuto: document.getElementById("log-auto"),
+      logRefresh: document.getElementById("btn-log-refresh"),
+      logClose: document.getElementById("btn-log-close"),
+      logMeta: document.getElementById("log-meta"),
+      logBody: document.getElementById("log-body"),
       chatTitle: document.getElementById("chat-title"),
       chatType: document.getElementById("chat-type"),
       wechatStatus: document.getElementById("wechat-status"),
       listenerStatus: document.getElementById("listener-status"),
       messageCount: document.getElementById("message-count"),
       messageList: document.getElementById("message-list"),
+      messageMode: document.getElementById("message-mode"),
+      messageModeStatus: document.getElementById("message-mode-status"),
       sendForm: document.getElementById("send-form"),
       sendText: document.getElementById("send-text"),
       sendButton: document.getElementById("send-button"),
@@ -514,11 +677,25 @@
       errorBanner: document.getElementById("error-banner"),
     };
 
+    const MESSAGE_MODE_KEY = "handwechat.messageMode";
+    const WS_RETRY_DELAYS = [1000, 2000, 5000, 10000];
+
     const state = {
       cursor: 0,
       messageCount: 0,
+      messageMode: "ws",
+      pollTimer: null,
+      socket: null,
+      socketReady: false,
+      socketSeenReady: false,
+      socketRetryTimer: null,
+      socketRetryIndex: 0,
+      socketFallbackTimer: null,
       tasks: new Map(),
       refreshing: false,
+      logRequestId: 0,
+      logAutoTimer: null,
+      logKeywordTimer: null,
     };
 
     function renderIcons() {
@@ -583,13 +760,20 @@
       return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
     }
 
+    function isNearBottom(element, threshold = 40) {
+      return element.scrollHeight - element.scrollTop - element.clientHeight <= threshold;
+    }
+
     function renderMessages(items) {
       if (items.length) {
+        // 用户向上翻看历史时不抢滚动条，只在贴近底部时跟随新消息
+        const stickToBottom = isNearBottom(elements.messageList);
         elements.messageList.querySelector(".empty")?.remove();
         for (const item of items) {
           elements.messageList.appendChild(renderMessage(item));
           state.messageCount += 1;
         }
+        if (stickToBottom) elements.messageList.scrollTop = elements.messageList.scrollHeight;
       }
       setPill(elements.messageCount, `${state.messageCount} 条`, "online");
     }
@@ -680,6 +864,197 @@
       }
     }
 
+    function readSavedMode() {
+      try {
+        return localStorage.getItem(MESSAGE_MODE_KEY) === "http" ? "http" : "ws";
+      } catch (_) {
+        return "ws";
+      }
+    }
+
+    function saveMode(mode) {
+      try {
+        localStorage.setItem(MESSAGE_MODE_KEY, mode);
+      } catch (_) {
+        /* 隐私模式下写入会失败，忽略 */
+      }
+    }
+
+    function setModeStatus(text, mode, hint) {
+      setPill(elements.messageModeStatus, text, mode);
+      elements.messageModeStatus.title = hint || "";
+    }
+
+    function stopHttpPolling() {
+      if (state.pollTimer) {
+        clearInterval(state.pollTimer);
+        state.pollTimer = null;
+      }
+    }
+
+    function startHttpPolling() {
+      stopHttpPolling();
+      refreshMessages();
+      state.pollTimer = setInterval(refreshMessages, 2000);
+    }
+
+    function clearSocketTimers() {
+      if (state.socketRetryTimer) {
+        clearTimeout(state.socketRetryTimer);
+        state.socketRetryTimer = null;
+      }
+      if (state.socketFallbackTimer) {
+        clearTimeout(state.socketFallbackTimer);
+        state.socketFallbackTimer = null;
+      }
+    }
+
+    function closeSocket() {
+      clearSocketTimers();
+      const socket = state.socket;
+      state.socket = null;
+      state.socketReady = false;
+      if (!socket) return;
+      socket.onopen = socket.onmessage = socket.onclose = socket.onerror = null;
+      try {
+        socket.close();
+      } catch (_) {
+        /* 已经关闭的连接直接忽略 */
+      }
+    }
+
+    function socketUrl() {
+      const scheme = location.protocol === "https:" ? "wss:" : "ws:";
+      return `${scheme}//${location.host}/api/v1/ws/messages`;
+    }
+
+    function handleSocketFrame(raw) {
+      let frame;
+      try {
+        frame = JSON.parse(raw);
+      } catch (_) {
+        return;
+      }
+      if (frame.type === "ready") {
+        if (typeof frame.cursor === "number") state.cursor = frame.cursor;
+        setModeStatus("已连接", "online");
+        clearError();
+        return;
+      }
+      if (frame.type === "messages") {
+        renderMessages(frame.items || []);
+        if (typeof frame.next_cursor === "number") state.cursor = frame.next_cursor;
+        clearError();
+        return;
+      }
+      if (frame.type === "error") {
+        showError(new Error(frame.message || frame.code || "WebSocket 推送异常"));
+      }
+    }
+
+    function fallbackToHttp(reason) {
+      if (state.messageMode !== "ws") return;
+      closeSocket();
+      state.messageMode = "http";
+      elements.messageMode.value = "http";
+      saveMode("http");
+      startHttpPolling();
+      setModeStatus("HTTP 轮询", "online", reason ? `WebSocket 不可用，已回落到 HTTP 轮询：${reason}` : "");
+    }
+
+    function scheduleSocketRetry() {
+      if (state.messageMode !== "ws") return;
+      const delay = WS_RETRY_DELAYS[Math.min(state.socketRetryIndex, WS_RETRY_DELAYS.length - 1)];
+      state.socketRetryIndex += 1;
+      state.socketRetryTimer = setTimeout(() => {
+        state.socketRetryTimer = null;
+        if (state.messageMode === "ws") openSocket();
+      }, delay);
+    }
+
+    function openSocket() {
+      closeSocket();
+      let socket;
+      try {
+        socket = new WebSocket(socketUrl());
+      } catch (error) {
+        fallbackToHttp(error.message || "浏览器不支持 WebSocket");
+        return;
+      }
+      state.socket = socket;
+      setModeStatus("连接中");
+
+      if (!state.socketSeenReady) {
+        // 首次连接迟迟收不到 ready 时直接回落，避免用户对着空列表等
+        state.socketFallbackTimer = setTimeout(() => {
+          state.socketFallbackTimer = null;
+          if (state.socket === socket && !state.socketReady) fallbackToHttp("握手超时");
+        }, 5000);
+      }
+
+      socket.onopen = () => {
+        if (state.socket !== socket) return;
+        setModeStatus("已连接", "online");
+      };
+
+      socket.onmessage = event => {
+        if (state.socket !== socket) return;
+        state.socketReady = true;
+        state.socketSeenReady = true;
+        state.socketRetryIndex = 0;
+        if (state.socketFallbackTimer) {
+          clearTimeout(state.socketFallbackTimer);
+          state.socketFallbackTimer = null;
+        }
+        handleSocketFrame(event.data);
+      };
+
+      socket.onerror = () => {
+        if (state.socket !== socket) return;
+        socket.close();
+      };
+
+      socket.onclose = () => {
+        if (state.socket !== socket) return;
+        state.socket = null;
+        state.socketReady = false;
+        clearSocketTimers();
+        if (state.messageMode !== "ws") return;
+        if (!state.socketSeenReady) {
+          fallbackToHttp("连接失败");
+          return;
+        }
+        setModeStatus("已断开", "offline", "WebSocket 已断开，正在自动重连");
+        scheduleSocketRetry();
+      };
+    }
+
+    function ensureSocketAlive() {
+      if (state.messageMode !== "ws") return;
+      const socket = state.socket;
+      if (socket && (socket.readyState === WebSocket.CONNECTING || socket.readyState === WebSocket.OPEN)) return;
+      clearSocketTimers();
+      openSocket();
+    }
+
+    function setMessageMode(mode, { persist = true } = {}) {
+      const next = mode === "http" ? "http" : "ws";
+      closeSocket();
+      stopHttpPolling();
+      state.messageMode = next;
+      elements.messageMode.value = next;
+      if (persist) saveMode(next);
+      if (next === "http") {
+        setModeStatus("HTTP 轮询", "online");
+        startHttpPolling();
+        return;
+      }
+      state.socketSeenReady = false;
+      state.socketRetryIndex = 0;
+      setModeStatus("连接中");
+      openSocket();
+    }
+
     async function attach() {
       setBusy(elements.attach, true);
       try {
@@ -738,12 +1113,159 @@
       }
     }
 
+    function formatSize(bytes) {
+      if (!Number.isFinite(bytes)) return "0 B";
+      if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+      if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+      return `${bytes} B`;
+    }
+
+    const DEDUP_VIEW = "__dedup__";
+
+    function dedupOption() {
+      const option = document.createElement("option");
+      option.value = DEDUP_VIEW;
+      option.textContent = "重复消息过滤队列";
+      return option;
+    }
+
+    async function loadLogFiles() {
+      const data = await request("/api/v1/logs");
+      const files = data.files || [];
+      const current = elements.logFile.value;
+      elements.logFile.replaceChildren(
+        dedupOption(),
+        ...files.map(file => {
+          const option = document.createElement("option");
+          option.value = file.name;
+          option.textContent = `${file.name}（${formatSize(file.size)}）`;
+          return option;
+        })
+      );
+      const values = [DEDUP_VIEW, ...files.map(file => file.name)];
+      if (values.includes(current)) {
+        elements.logFile.value = current;
+      } else {
+        elements.logFile.value = files.length ? files[0].name : DEDUP_VIEW;
+      }
+      return true;
+    }
+
+    async function loadDedupQueue(requestId) {
+      try {
+        const data = await request("/api/v1/ocr/dedup");
+        if (requestId !== state.logRequestId) return;
+        const keyword = elements.logKeyword.value.trim().toLowerCase();
+        const items = (data.items || []).filter(item => {
+          if (!keyword) return true;
+          return `${item.sender || ""} ${item.text}`.toLowerCase().includes(keyword);
+        });
+
+        let body;
+        if (!data.running) {
+          body = "（监听未启动，去重队列为空）";
+        } else if (!items.length) {
+          body = keyword
+            ? "（没有匹配的队列条目）"
+            : "（队列为空：还没有识别到可去重的消息）";
+        } else {
+          body = items
+            .map((item, index) => {
+              const sender = item.sender || "（发送者未知）";
+              const seq = String(index + 1).padStart(2, " ");
+              return `${seq}. [${item.attr}] ${sender}：${item.text}`;
+            })
+            .join("\n");
+        }
+        elements.logBody.textContent = body;
+        elements.logMeta.textContent = [
+          "重复消息过滤队列",
+          `已用 ${data.size} / 容量 ${data.capacity}`,
+          `累计过滤 ${data.filtered_count} 条`,
+        ].join(" · ");
+        elements.logBody.scrollTop = 0;
+        clearError();
+      } catch (error) {
+        if (requestId === state.logRequestId) showError(error);
+      } finally {
+        if (requestId === state.logRequestId) setBusy(elements.logRefresh, false);
+      }
+    }
+
+    async function loadLog() {
+      if (elements.logModal.hidden) return;
+      const name = elements.logFile.value;
+      if (!name) return;
+      const requestId = ++state.logRequestId;
+      setBusy(elements.logRefresh, true);
+      if (name === DEDUP_VIEW) {
+        await loadDedupQueue(requestId);
+        return;
+      }
+      try {
+        const params = new URLSearchParams({
+          lines: elements.logLines.value,
+          keyword: elements.logKeyword.value.trim(),
+        });
+        const data = await request(`/api/v1/logs/${encodeURIComponent(name)}?${params.toString()}`);
+        if (requestId !== state.logRequestId) return;
+        elements.logBody.textContent = data.lines.join("\n") || "（没有匹配的日志行）";
+        const meta = [
+          data.name,
+          formatSize(data.size),
+          `扫描 ${data.scanned_lines} 行`,
+          `命中 ${data.matched_lines} 行`,
+        ];
+        if (data.truncated) meta.push("只扫描了文件末尾 2 MB");
+        elements.logMeta.textContent = meta.join(" · ");
+        elements.logBody.scrollTop = elements.logBody.scrollHeight;
+        clearError();
+      } catch (error) {
+        if (requestId === state.logRequestId) showError(error);
+      } finally {
+        if (requestId === state.logRequestId) setBusy(elements.logRefresh, false);
+      }
+    }
+
+    function stopLogAutoRefresh() {
+      if (state.logAutoTimer) {
+        clearInterval(state.logAutoTimer);
+        state.logAutoTimer = null;
+      }
+    }
+
+    function syncLogAutoRefresh() {
+      stopLogAutoRefresh();
+      if (!elements.logModal.hidden && elements.logAuto.checked) {
+        state.logAutoTimer = setInterval(loadLog, 2000);
+      }
+    }
+
+    async function openLogs() {
+      elements.logModal.hidden = false;
+      syncLogAutoRefresh();
+      try {
+        if (!(await loadLogFiles())) return;
+        await loadLog();
+      } catch (error) {
+        showError(error);
+      }
+    }
+
+    function closeLogs() {
+      elements.logModal.hidden = true;
+      stopLogAutoRefresh();
+    }
+
     async function refreshAll() {
       if (state.refreshing) return;
       state.refreshing = true;
       setBusy(elements.refresh, true);
       try {
-        await Promise.all([refreshHealth(), refreshMessages()]);
+        const jobs = [refreshHealth()];
+        if (state.messageMode === "http") jobs.push(refreshMessages());
+        await Promise.all(jobs);
+        if (state.messageMode === "ws") ensureSocketAlive();
         await Promise.all([...state.tasks.keys()].map(async taskId => {
           try {
             const task = await request(`/api/v1/send/${encodeURIComponent(taskId)}`);
@@ -772,13 +1294,39 @@
     elements.taskId.addEventListener("keydown", event => {
       if (event.key === "Enter") lookupTask();
     });
+    elements.logs.addEventListener("click", openLogs);
+    elements.logClose.addEventListener("click", closeLogs);
+    elements.logBackdrop.addEventListener("click", closeLogs);
+    elements.logRefresh.addEventListener("click", loadLog);
+    elements.logFile.addEventListener("change", loadLog);
+    elements.logLines.addEventListener("change", loadLog);
+    elements.logAuto.addEventListener("change", syncLogAutoRefresh);
+    elements.logKeyword.addEventListener("input", () => {
+      clearTimeout(state.logKeywordTimer);
+      state.logKeywordTimer = setTimeout(loadLog, 400);
+    });
+    elements.logKeyword.addEventListener("keydown", event => {
+      if (event.key === "Enter") {
+        clearTimeout(state.logKeywordTimer);
+        loadLog();
+      }
+    });
+    document.addEventListener("keydown", event => {
+      if (event.key === "Escape" && !elements.logModal.hidden) closeLogs();
+    });
 
     renderIcons();
     renderTasks();
-    refreshAll();
+    refreshHealth();
     setInterval(refreshHealth, 5000);
-    setInterval(refreshMessages, 2000);
     window.addEventListener("online", refreshAll);
+    elements.messageMode.addEventListener("change", () => setMessageMode(elements.messageMode.value));
+
+    (async () => {
+      // 首屏先用 HTTP 拉一次缓冲区历史，再按选定模式接续增量
+      await refreshMessages();
+      setMessageMode(readSavedMode(), { persist: false });
+    })();
   </script>
 </body>
 </html>

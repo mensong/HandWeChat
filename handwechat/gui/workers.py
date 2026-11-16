@@ -10,7 +10,7 @@ from PySide6.QtCore import QObject, QThread, Signal
 
 from handwechat.models import BaseMessage
 from handwechat.ocr_calibration import load_ocr_calibration
-from handwechat.ocr_channel import OcrChannel
+from handwechat.ocr_channel import OcrChannel, configure_ocr_logging
 from handwechat.paths import app_data_path
 from handwechat.runtime import WeChatRuntime
 
@@ -71,16 +71,19 @@ class WeChatController(QObject):
         *,
         poll_interval: float = 2.0,
         max_send_per_minute: int = 20,
+        dedup_queue_size: int = 10,
         parent: Optional[QObject] = None,
     ) -> None:
         super().__init__(parent)
         self.bridge = ListenerBridge(self)
+        configure_ocr_logging(app_data_path("logs") / "ocr.log")
         calibration = load_ocr_calibration(
             app_data_path("ocr_calibration.json")
         )
         self.channel = OcrChannel(
             poll_interval=poll_interval,
             max_send_per_minute=max_send_per_minute,
+            dedup_queue_size=dedup_queue_size,
             state_path=app_data_path("ocr_listener_state.json"),
             input_x_ratio=calibration.input_x_ratio,
             input_y_ratio=calibration.input_y_ratio,
