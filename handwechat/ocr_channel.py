@@ -482,6 +482,7 @@ class OcrChannel:
         self._dedup_queue_size = max(1, int(dedup_queue_size))
         self._dedup_keys: deque[str] = deque()
         self._dedup_filtered_count = 0
+        self._last_newest_key = ""
         self.input_x_ratio = min(0.99, max(0.01, float(input_x_ratio)))
         self.input_y_ratio = min(0.99, max(0.01, float(input_y_ratio)))
         self.title_box = title_box
@@ -1060,6 +1061,7 @@ class OcrChannel:
         overlap_length = 0
         candidate_count = 0
         seeded = False
+        newest_state = "none"
 
         with self._status_lock:
             previous_title = self._chat_title
@@ -1079,12 +1081,15 @@ class OcrChannel:
                 self._state.initialized = False
                 self._state.recent_keys = []
                 self._dedup_keys.clear()
+                self._last_newest_key = ""
 
             if not self._state.initialized:
                 self._state.initialized = True
                 seeded = True
                 self._state.recent_keys = keys[-self.recent_key_limit :]
                 self._remember_dedup_keys(frame.messages)
+                if frame.messages:
+                    self._last_newest_key = _dedup_key(frame.messages[-1])
                 self._state.updated_at = _now_text()
                 self._save_state_locked()
             else:
@@ -1095,7 +1100,20 @@ class OcrChannel:
                     candidates = list(frame.messages)
                 candidate_count = len(candidates)
 
-                new_messages, filtered = self._filter_duplicate_messages(candidates)
+                # 最新一条消息不看队列：与上一轮的最新消息不同才算新消息。
+                newest = candidates[-1] if candidates else None
+                rest = candidates[:-1]
+                new_messages, filtered = self._filter_duplicate_messages(rest)
+
+                if newest is not None:
+                    newest_key = _dedup_key(newest)
+                    if newest_key != self._last_newest_key:
+                        new_messages.append(newest)
+                        self._remember_dedup_keys([newest])
+                        newest_state = "emit"
+                    else:
+                        newest_state = "hold"
+                    self._last_newest_key = newest_key
 
                 if new_messages:
                     for message in new_messages:
@@ -1146,6 +1164,7 @@ class OcrChannel:
             filtered=len(filtered),
             emitted=len(emitted),
             seeded=seeded,
+            newest=newest_state,
             elapsed_ms=(time.perf_counter() - started_at) * 1000,
         )
 
@@ -1159,6 +1178,7 @@ class OcrChannel:
         filtered: int,
         emitted: int,
         seeded: bool,
+        newest: str,
         elapsed_ms: float,
     ) -> None:
         if not logger.isEnabledFor(logging.INFO):
@@ -1171,6 +1191,7 @@ class OcrChannel:
             "candidates": candidates,
             "dedup": filtered,
             "emitted": emitted,
+            "newest": newest,
             "ocr_ms": round(frame.ocr_ms, 1),
             "elapsed_ms": round(elapsed_ms, 1),
             "age_ms": round((time.time() - frame.captured_at) * 1000, 1),
