@@ -571,6 +571,16 @@ class OcrChannel:
             while len(self._dedup_keys) > size:
                 self._dedup_keys.popleft()
 
+    def clear_dedup_queue(self) -> int:
+        """Drop every remembered key; returns how many were removed."""
+
+        with self._state_lock:
+            cleared = len(self._dedup_keys)
+            self._dedup_keys.clear()
+        if cleared:
+            logger.info(_log_record(event="dedup_clear", cleared=cleared))
+        return cleared
+
     def dedup_snapshot(self) -> dict:
         """Return a read-only view of the duplicate filter queue."""
 

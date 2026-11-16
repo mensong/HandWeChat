@@ -13,6 +13,8 @@ from typing import Optional
 
 task_logger = logging.getLogger("handwechat.api.send_tasks")
 
+_MAX_LOG_TEXT = 200
+
 
 class SendTaskStatus:
     QUEUED = "queued"
@@ -145,4 +147,9 @@ def _log_task(action: str, task: SendTask) -> None:
         "error_code": task.error_code,
         "error_message": task.error_message,
     }
+    if action == "created":
+        text = str(task.text)
+        payload["text"] = text[:_MAX_LOG_TEXT]
+        if len(text) > _MAX_LOG_TEXT:
+            payload["truncated"] = True
     task_logger.info(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))

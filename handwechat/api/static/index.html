@@ -176,6 +176,7 @@
 
     .icon-button:hover { background: var(--surface-muted); }
     .icon-button:disabled { color: #9aa3ad; cursor: not-allowed; }
+    .icon-button[hidden] { display: none; }
     .icon-button.primary { color: var(--accent); border-color: #b8d8cd; background: var(--accent-soft); }
     .icon-button.stop { color: var(--danger); border-color: #e3c1c3; background: #f7e9ea; }
     .icon-button svg { width: 17px; height: 17px; }
@@ -630,6 +631,9 @@
           <button id="btn-log-refresh" class="icon-button" type="button" title="刷新日志" aria-label="刷新日志">
             <i data-lucide="refresh-cw"></i>
           </button>
+          <button id="btn-dedup-clear" class="icon-button stop" type="button" title="清除重复消息过滤队列" aria-label="清除重复消息过滤队列" hidden>
+            <i data-lucide="trash-2"></i>
+          </button>
           <button id="btn-log-close" class="icon-button" type="button" title="关闭日志" aria-label="关闭日志">
             <i data-lucide="x"></i>
           </button>
@@ -656,6 +660,7 @@
       logKeyword: document.getElementById("log-keyword"),
       logAuto: document.getElementById("log-auto"),
       logRefresh: document.getElementById("btn-log-refresh"),
+      dedupClear: document.getElementById("btn-dedup-clear"),
       logClose: document.getElementById("btn-log-close"),
       logMeta: document.getElementById("log-meta"),
       logBody: document.getElementById("log-body"),
@@ -856,8 +861,10 @@
     async function refreshMessages() {
       try {
         const data = await request(`/api/v1/messages?cursor=${state.cursor}&limit=100&timeout=1`);
+        // 服务端进程重启后游标会从头开始，检测到回退就丢弃旧游标重新读缓冲区
+        const restarted = typeof data.latest_cursor === "number" && data.latest_cursor < state.cursor;
         renderMessages(data.items || []);
-        state.cursor = data.next_cursor || state.cursor;
+        state.cursor = restarted ? 0 : (data.next_cursor ?? state.cursor);
         clearError();
       } catch (error) {
         showError(error);
@@ -936,14 +943,15 @@
         return;
       }
       if (frame.type === "ready") {
-        if (typeof frame.cursor === "number") state.cursor = frame.cursor;
         setModeStatus("已连接", "online");
         clearError();
         return;
       }
       if (frame.type === "messages") {
-        renderMessages(frame.items || []);
-        if (typeof frame.next_cursor === "number") state.cursor = frame.next_cursor;
+        const items = frame.items || [];
+        renderMessages(items);
+        // WS 帧不带流位置，用消息自身的 cursor 维护本地游标，切回 HTTP 才能续接
+        if (items.length) state.cursor = items[items.length - 1].cursor;
         clearError();
         return;
       }
@@ -1198,6 +1206,7 @@
       if (!name) return;
       const requestId = ++state.logRequestId;
       setBusy(elements.logRefresh, true);
+      elements.dedupClear.hidden = name !== DEDUP_VIEW;
       if (name === DEDUP_VIEW) {
         await loadDedupQueue(requestId);
         return;
@@ -1224,6 +1233,21 @@
         if (requestId === state.logRequestId) showError(error);
       } finally {
         if (requestId === state.logRequestId) setBusy(elements.logRefresh, false);
+      }
+    }
+
+    async function clearDedupQueue() {
+      if (!window.confirm("确定清除重复消息过滤队列吗？")) return;
+      setBusy(elements.dedupClear, true);
+      try {
+        const data = await post("/api/v1/ocr/dedup/clear");
+        await loadLog();
+        elements.logMeta.textContent += ` · 已清除 ${data.cleared} 条`;
+        clearError();
+      } catch (error) {
+        showError(error);
+      } finally {
+        setBusy(elements.dedupClear, false);
       }
     }
 
@@ -1298,6 +1322,7 @@
     elements.logClose.addEventListener("click", closeLogs);
     elements.logBackdrop.addEventListener("click", closeLogs);
     elements.logRefresh.addEventListener("click", loadLog);
+    elements.dedupClear.addEventListener("click", clearDedupQueue);
     elements.logFile.addEventListener("change", loadLog);
     elements.logLines.addEventListener("change", loadLog);
     elements.logAuto.addEventListener("change", syncLogAutoRefresh);

@@ -50,6 +50,7 @@ class MessageListResponse(BaseModel):
     items: list[MessageResponse] = Field(default_factory=list)
     next_cursor: int
     has_more: bool
+    latest_cursor: int = 0
 
 
 class LogFileResponse(BaseModel):
@@ -84,6 +85,10 @@ class DedupQueueResponse(BaseModel):
     size: int
     filtered_count: int
     items: list[DedupItemResponse] = Field(default_factory=list)
+
+
+class DedupClearResponse(BaseModel):
+    cleared: int
 
 
 class SendRequest(BaseModel):

@@ -26,6 +26,7 @@ from handwechat.api.config import ApiConfig
 from handwechat.api.logging_setup import configure_api_logging
 from handwechat.api.models import (
     AttachResponse,
+    DedupClearResponse,
     DedupQueueResponse,
     HealthResponse,
     ListenerControlResponse,
@@ -329,6 +330,7 @@ def create_app(
             items=[_message_response(item) for item in items],
             next_cursor=next_cursor,
             has_more=has_more,
+            latest_cursor=service.message_cursor,
         )
 
     @app.get("/api/v1/logs", response_model=LogFileListResponse)
@@ -348,6 +350,10 @@ def create_app(
     @app.get("/api/v1/ocr/dedup", response_model=DedupQueueResponse)
     def dedup_queue() -> DedupQueueResponse:
         return DedupQueueResponse.model_validate(service.get_dedup_queue())
+
+    @app.post("/api/v1/ocr/dedup/clear", response_model=DedupClearResponse)
+    def clear_dedup_queue() -> DedupClearResponse:
+        return DedupClearResponse.model_validate(service.clear_dedup_queue())
 
     @app.post(
         "/api/v1/send",
@@ -393,7 +399,6 @@ def create_app(
             await websocket.send_json(
                 {
                     "type": "ready",
-                    "cursor": cursor,
                     "buffer_size": service.message_buffer.size,
                 }
             )
@@ -410,7 +415,6 @@ def create_app(
                                 _message_response(item).model_dump()
                                 for item in items
                             ],
-                            "next_cursor": cursor,
                             "has_more": has_more,
                         }
                     )

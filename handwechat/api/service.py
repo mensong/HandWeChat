@@ -249,6 +249,12 @@ class ApiService:
         snapshot["running"] = bool(channel.running)
         return snapshot
 
+    def clear_dedup_queue(self) -> dict:
+        channel = self.ocr_channel
+        if channel is None:
+            return {"cleared": 0}
+        return {"cleared": channel.clear_dedup_queue()}
+
     def send(self, text: str) -> SendTask:
         channel = self._require_ocr_channel()
         task = self.send_tasks.create(text)

@@ -107,7 +107,7 @@ def main() -> None:
             with client.websocket_connect("/api/v1/ws/messages") as ws:
                 ready = ws.receive_json()
                 assert ready["type"] == "ready", ready
-                assert ready["cursor"] == 1, ready
+                assert "cursor" not in ready, ready
                 assert ready["buffer_size"] == 1, ready
 
                 channel.emit_message(2, "first")
@@ -116,7 +116,7 @@ def main() -> None:
                 assert len(frame["items"]) == 1, frame
                 assert frame["items"][0]["content"] == "first", frame
                 assert frame["items"][0]["cursor"] == 2, frame
-                assert frame["next_cursor"] == 2, frame
+                assert "next_cursor" not in frame, frame
                 assert frame["has_more"] is False, frame
 
                 # An idle connection receives a heartbeat, not messages.
@@ -128,7 +128,7 @@ def main() -> None:
                 with client.websocket_connect("/api/v1/ws/messages") as ws2:
                     ready2 = ws2.receive_json()
                     assert ready2["type"] == "ready", ready2
-                    assert ready2["cursor"] == 2, ready2
+                    assert "cursor" not in ready2, ready2
 
                     channel.emit_message(3, "shared")
                     frame1 = ws.receive_json()
@@ -162,6 +162,7 @@ def main() -> None:
                 "after close",
                 "still alive",
             ], contents
+            assert history.json()["latest_cursor"] == 5, history.json()
 
             for logger_name in (
                 "handwechat.api.access",
