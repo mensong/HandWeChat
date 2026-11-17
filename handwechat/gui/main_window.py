@@ -144,18 +144,18 @@ class MainWindow(QMainWindow):
         calibration_row.addWidget(self.calibration_status_label, 1)
         calibration_row.addWidget(self.calibrate_button)
 
-        dedup_row = QHBoxLayout()
-        dedup_row.addWidget(QLabel("去重队列大小"))
-        self.dedup_spin = QSpinBox(page)
-        self.dedup_spin.setRange(1, 1000)
-        self.dedup_spin.setValue(int(self.config.dedup_queue_size))
-        self.dedup_spin.valueChanged.connect(self._on_dedup_size_changed)
-        dedup_row.addWidget(self.dedup_spin)
-        self.dedup_count_label = QLabel("已过滤重复：0")
-        dedup_row.addWidget(self.dedup_count_label)
-        dedup_row.addStretch(1)
+        history_row = QHBoxLayout()
+        history_row.addWidget(QLabel("历史 OCR 消息数"))
+        self.history_spin = QSpinBox(page)
+        self.history_spin.setRange(1, 1000)
+        self.history_spin.setValue(int(self.config.history_size))
+        self.history_spin.valueChanged.connect(self._on_history_size_changed)
+        history_row.addWidget(self.history_spin)
+        self.history_count_label = QLabel("历史消息：0 / 10")
+        history_row.addWidget(self.history_count_label)
+        history_row.addStretch(1)
 
-        layout.addLayout(dedup_row)
+        layout.addLayout(history_row)
         layout.addLayout(calibration_row)
         layout.addStretch(1)
         self._refresh_ocr_calibration_status()
@@ -186,7 +186,7 @@ class MainWindow(QMainWindow):
         return WeChatController(
             poll_interval=self.config.poll_interval,
             max_send_per_minute=self.config.max_send_per_minute,
-            dedup_queue_size=self.config.dedup_queue_size,
+            history_size=self.config.history_size,
         )
 
     def _on_attached(self, controller: WeChatController) -> None:
@@ -259,19 +259,22 @@ class MainWindow(QMainWindow):
         )
         last_error = status.get("last_error") or "无"
         self.listener_error_label.setText(f"最近错误：{last_error}")
-        self.dedup_count_label.setText(
-            "已过滤重复：{}".format(status.get("dedup_filtered_count", 0))
+        self.history_count_label.setText(
+            "历史消息：{} / {}".format(
+                status.get("history_size", 0),
+                status.get("history_capacity", 0),
+            )
         )
 
-    def _on_dedup_size_changed(self, value: int) -> None:
-        self.config.dedup_queue_size = max(1, int(value))
+    def _on_history_size_changed(self, value: int) -> None:
+        self.config.history_size = max(1, int(value))
         try:
             self.config.save(self.CONFIG_PATH)
         except OSError as exc:
-            self._log(f"去重队列配置保存失败：{exc}")
+            self._log(f"历史消息配置保存失败：{exc}")
         if self.controller:
-            self.controller.channel.dedup_queue_size = self.config.dedup_queue_size
-        self._log(f"去重队列大小已设为 {self.config.dedup_queue_size}")
+            self.controller.channel.history_size = self.config.history_size
+        self._log(f"历史 OCR 消息数已设为 {self.config.history_size}")
 
     # -- 消息 ---------------------------------------------------------------
     def _on_chat_changed(self, chat_title: str) -> None:
@@ -281,6 +284,8 @@ class MainWindow(QMainWindow):
         self._render_messages()
 
     def _on_message_received(self, message: BaseMessage) -> None:
+        if self.messages:
+            self.messages[-1].is_latest = False
         self.messages.append(message)
         self._refresh_listener_status()
         self._render_messages()
@@ -315,11 +320,23 @@ class MainWindow(QMainWindow):
             )
             if item.type == "other":
                 content = "[暂不支持的消息类型]"
+            if getattr(item, "is_latest", False):
+                badge = (
+                    "<span style='color:#176b2e;background:#e4f3e8;"
+                    "padding:1px 5px;border-radius:4px;font-size:11px;'>最新</span>"
+                )
+            else:
+                confidence = float(getattr(item, "confidence", 1.0))
+                badge = (
+                    "<span style='color:#657180;background:#eef1f4;"
+                    "padding:1px 5px;border-radius:4px;font-size:11px;'>"
+                    f"置信度 {confidence:.1f}</span>"
+                )
             chunks.append(
                 f"<div style='margin:4px 0;'>"
                 f"<span style='color:{color};font-weight:bold;'>{prefix}</span>　"
                 f"<span style='color:#999;font-size:11px;'>"
-                f"{item.extra.get('listen_time', '')}</span><br>"
+                f"{item.extra.get('listen_time', '')}</span> {badge}<br>"
                 f"<span style='white-space:pre-wrap;'>{content}</span>"
                 f"</div>"
             )

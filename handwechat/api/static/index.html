@@ -257,6 +257,22 @@
     }
     .message-self .message-meta strong { color: var(--accent); }
 
+    .msg-badge {
+      display: inline-block;
+      margin-left: 6px;
+      padding: 1px 6px;
+      border-radius: 5px;
+      background: var(--surface-muted);
+      color: var(--text-muted);
+      font-size: 11px;
+      font-weight: 600;
+    }
+
+    .msg-badge.latest {
+      background: #e4f3e8;
+      color: #176b2d;
+    }
+
     .message-content {
       white-space: pre-wrap;
       overflow-wrap: anywhere;
@@ -631,7 +647,7 @@
           <button id="btn-log-refresh" class="icon-button" type="button" title="刷新日志" aria-label="刷新日志">
             <i data-lucide="refresh-cw"></i>
           </button>
-          <button id="btn-dedup-clear" class="icon-button stop" type="button" title="清除重复消息过滤队列" aria-label="清除重复消息过滤队列" hidden>
+          <button id="btn-history-clear" class="icon-button stop" type="button" title="清空历史 OCR 消息" aria-label="清空历史 OCR 消息" hidden>
             <i data-lucide="trash-2"></i>
           </button>
           <button id="btn-log-close" class="icon-button" type="button" title="关闭日志" aria-label="关闭日志">
@@ -660,7 +676,7 @@
       logKeyword: document.getElementById("log-keyword"),
       logAuto: document.getElementById("log-auto"),
       logRefresh: document.getElementById("btn-log-refresh"),
-      dedupClear: document.getElementById("btn-dedup-clear"),
+      historyClear: document.getElementById("btn-history-clear"),
       logClose: document.getElementById("btn-log-close"),
       logMeta: document.getElementById("log-meta"),
       logBody: document.getElementById("log-body"),
@@ -774,6 +790,16 @@
         // 用户向上翻看历史时不抢滚动条，只在贴近底部时跟随新消息
         const stickToBottom = isNearBottom(elements.messageList);
         elements.messageList.querySelector(".empty")?.remove();
+        // 新消息到达后，之前标着"最新"的那条降级为普通消息
+        for (const row of elements.messageList.querySelectorAll(".message.latest")) {
+          row.classList.remove("latest");
+          const badge = row.querySelector(".msg-badge");
+          if (badge) {
+            const confidence = Number(row.dataset.confidence || 1);
+            badge.textContent = `置信度 ${confidence.toFixed(1)}`;
+            badge.classList.remove("latest");
+          }
+        }
         for (const item of items) {
           elements.messageList.appendChild(renderMessage(item));
           state.messageCount += 1;
@@ -785,7 +811,8 @@
 
     function renderMessage(item) {
       const row = document.createElement("article");
-      row.className = `message${item.sender === "我" ? " message-self" : ""}`;
+      row.className = `message${item.sender === "我" ? " message-self" : ""}${item.is_latest ? " latest" : ""}`;
+      row.dataset.confidence = String(item.confidence ?? 1);
 
       const meta = document.createElement("div");
       meta.className = "message-meta";
@@ -793,7 +820,12 @@
       sender.textContent = item.sender || "未知";
       const time = document.createElement("span");
       time.textContent = formatTime(item.received_at);
-      meta.append(sender, time);
+      const badge = document.createElement("span");
+      badge.className = `msg-badge${item.is_latest ? " latest" : ""}`;
+      badge.textContent = item.is_latest
+        ? "最新"
+        : `置信度 ${Number(item.confidence ?? 1).toFixed(1)}`;
+      meta.append(sender, time, badge);
       const content = document.createElement("div");
       content.className = "message-content";
       content.textContent = item.content;
@@ -1128,12 +1160,12 @@
       return `${bytes} B`;
     }
 
-    const DEDUP_VIEW = "__dedup__";
+    const HISTORY_VIEW = "__history__";
 
-    function dedupOption() {
+    function historyOption() {
       const option = document.createElement("option");
-      option.value = DEDUP_VIEW;
-      option.textContent = "重复消息过滤队列";
+      option.value = HISTORY_VIEW;
+      option.textContent = "历史 OCR 消息";
       return option;
     }
 
@@ -1142,7 +1174,7 @@
       const files = data.files || [];
       const current = elements.logFile.value;
       elements.logFile.replaceChildren(
-        dedupOption(),
+        historyOption(),
         ...files.map(file => {
           const option = document.createElement("option");
           option.value = file.name;
@@ -1150,18 +1182,18 @@
           return option;
         })
       );
-      const values = [DEDUP_VIEW, ...files.map(file => file.name)];
+      const values = [HISTORY_VIEW, ...files.map(file => file.name)];
       if (values.includes(current)) {
         elements.logFile.value = current;
       } else {
-        elements.logFile.value = files.length ? files[0].name : DEDUP_VIEW;
+        elements.logFile.value = files.length ? files[0].name : HISTORY_VIEW;
       }
       return true;
     }
 
-    async function loadDedupQueue(requestId) {
+    async function loadHistory(requestId) {
       try {
-        const data = await request("/api/v1/ocr/dedup");
+        const data = await request("/api/v1/ocr/history");
         if (requestId !== state.logRequestId) return;
         const keyword = elements.logKeyword.value.trim().toLowerCase();
         const items = (data.items || []).filter(item => {
@@ -1171,27 +1203,29 @@
 
         let body;
         if (!data.running) {
-          body = "（监听未启动，去重队列为空）";
+          body = "（监听未启动，历史为空）";
         } else if (!items.length) {
           body = keyword
-            ? "（没有匹配的队列条目）"
-            : "（队列为空：还没有识别到可去重的消息）";
+            ? "（没有匹配的历史消息）"
+            : "（还没有识别到消息）";
         } else {
           body = items
             .map((item, index) => {
               const sender = item.sender || "（发送者未知）";
               const seq = String(index + 1).padStart(2, " ");
-              return `${seq}. [${item.attr}] ${sender}：${item.text}`;
+              const tag = item.is_latest
+                ? "最新"
+                : `置信度 ${Number(item.confidence ?? 1).toFixed(1)}`;
+              return `${seq}. [${item.attr}] ${sender}：${item.text}  ·  ${tag}`;
             })
             .join("\n");
         }
         elements.logBody.textContent = body;
         elements.logMeta.textContent = [
-          "重复消息过滤队列",
+          "历史 OCR 消息",
           `已用 ${data.size} / 容量 ${data.capacity}`,
-          `累计过滤 ${data.filtered_count} 条`,
         ].join(" · ");
-        elements.logBody.scrollTop = 0;
+        elements.logBody.scrollTop = elements.logBody.scrollHeight;
         clearError();
       } catch (error) {
         if (requestId === state.logRequestId) showError(error);
@@ -1206,9 +1240,9 @@
       if (!name) return;
       const requestId = ++state.logRequestId;
       setBusy(elements.logRefresh, true);
-      elements.dedupClear.hidden = name !== DEDUP_VIEW;
-      if (name === DEDUP_VIEW) {
-        await loadDedupQueue(requestId);
+      elements.historyClear.hidden = name !== HISTORY_VIEW;
+      if (name === HISTORY_VIEW) {
+        await loadHistory(requestId);
         return;
       }
       try {
@@ -1236,18 +1270,18 @@
       }
     }
 
-    async function clearDedupQueue() {
-      if (!window.confirm("确定清除重复消息过滤队列吗？")) return;
-      setBusy(elements.dedupClear, true);
+    async function clearHistory() {
+      if (!window.confirm("确定清空历史 OCR 消息吗？")) return;
+      setBusy(elements.historyClear, true);
       try {
-        const data = await post("/api/v1/ocr/dedup/clear");
+        const data = await post("/api/v1/ocr/history/clear");
         await loadLog();
-        elements.logMeta.textContent += ` · 已清除 ${data.cleared} 条`;
+        elements.logMeta.textContent += ` · 已清空 ${data.cleared} 条`;
         clearError();
       } catch (error) {
         showError(error);
       } finally {
-        setBusy(elements.dedupClear, false);
+        setBusy(elements.historyClear, false);
       }
     }
 
@@ -1322,7 +1356,7 @@
     elements.logClose.addEventListener("click", closeLogs);
     elements.logBackdrop.addEventListener("click", closeLogs);
     elements.logRefresh.addEventListener("click", loadLog);
-    elements.dedupClear.addEventListener("click", clearDedupQueue);
+    elements.historyClear.addEventListener("click", clearHistory);
     elements.logFile.addEventListener("change", loadLog);
     elements.logLines.addEventListener("change", loadLog);
     elements.logAuto.addEventListener("change", syncLogAutoRefresh);

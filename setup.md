@@ -113,7 +113,7 @@ GUI 和 API 共用 `dist\HandWeChat\data\` 保存配置和日志，也共用同�
 OCR 通道不依赖 UIA 控件树，只读取微信当前打开的聊天，支持接收文本和发送文本。消息读取使用三段流水线：
 
 ```text
-截图线程 -> 截图队列(maxsize=8) -> PaddleOCR 线程 -> 解析队列(maxsize=8) -> 消息差异线程
+截图线程 -> 截图队列(maxsize=8) -> PaddleOCR 线程 -> 解析队列(maxsize=8) -> 新消息判定线程
 ```
 
 截图完成不会立刻执行 OCR；OCR 慢时会通过有界队列形成背压，避免解析压力打满后继续无节制占用内存。
@@ -124,7 +124,7 @@ OCR 通道不依赖 UIA 控件树，只读取微信当前打开的聊天，支�
 {
   "ocr_poll_interval": 2.0,
   "ocr_max_send_per_minute": 20,
-  "ocr_dedup_queue_size": 10,
+  "ocr_history_size": 10,
   "ocr_log_file": "ocr.log"
 }
 ```
@@ -167,7 +167,7 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
-WebSocket 依赖 `websockets`（已在 `requirements.txt` 中），帧格式见 `接口方案.md` 的「WebSocket 推送消息」。
+WebSocket 依赖 `websockets`（已在 `requirements.txt` 中），帧格式见 `微信服务接口.md` 的「WebSocket 推送消息」。
 
 发送文本消息：
 
@@ -189,4 +189,4 @@ curl http://127.0.0.1:8000/api/v1/send/send_20260112_000001
 curl -X POST http://127.0.0.1:8000/api/v1/listener/stop
 ```
 
-OCR 消息复用全局 `MessageBuffer` 的自增 `cursor`。`/api/v1/health` 会返回队列大小和截图去重状态：`last_frame_signature` 是最新截图签名，`last_accepted_signature` 是最近一次成功 OCR 的签名，`ocr_skip_identical_count` 表示已跳过的相同内容帧数。OCR 签名只覆盖标题区和聊天区；窗口移动或输入框变化不会触发 OCR。首次启动时 PaddleOCR 需要加载 `ocr_models` 离线模型，通常需要等待十几秒。
+OCR 消息复用全局 `MessageBuffer` 的自增 `cursor`。每条消息带 `is_latest`（本批返回里最新的一条）和 `confidence`（同一发送者同一内容重复输出次数越多越低；标记为最新的一条恒为 1.0）。`/api/v1/health` 会返回历史列表状态和截图跳过状态：`history_size` / `history_capacity` 是「历史 OCR 消息」的当前条数和容量，`last_frame_signature` 是最新截图签名，`last_accepted_signature` 是最近一次成功 OCR 的签名，`ocr_skip_identical_count` 表示已跳过的相同内容帧数。OCR 签名只覆盖标题区和聊天区；窗口移动或输入框变化不会触发 OCR。首次启动时 PaddleOCR 需要加载 `ocr_models` 离线模型，通常需要等待十几秒。

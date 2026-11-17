@@ -12,14 +12,14 @@ from pathlib import Path
 class GuiConfig:
     poll_interval: float = 2.0
     max_send_per_minute: int = 20
-    dedup_queue_size: int = 10
+    history_size: int = 10
 
     def to_dict(self) -> dict:
         return {
-            "version": 3,
+            "version": 4,
             "poll_interval": self.poll_interval,
             "max_send_per_minute": self.max_send_per_minute,
-            "dedup_queue_size": self.dedup_queue_size,
+            "history_size": self.history_size,
         }
 
     @classmethod
@@ -27,7 +27,7 @@ class GuiConfig:
         return cls(
             poll_interval=float(data.get("poll_interval") or 2.0),
             max_send_per_minute=int(data.get("max_send_per_minute") or 20),
-            dedup_queue_size=max(1, int(data.get("dedup_queue_size") or 10)),
+            history_size=max(1, int(data.get("history_size") or 10)),
         )
 
     @classmethod

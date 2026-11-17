@@ -26,9 +26,9 @@ from handwechat.api.config import ApiConfig
 from handwechat.api.logging_setup import configure_api_logging
 from handwechat.api.models import (
     AttachResponse,
-    DedupClearResponse,
-    DedupQueueResponse,
     HealthResponse,
+    HistoryClearResponse,
+    HistoryResponse,
     ListenerControlResponse,
     LogFileListResponse,
     LogTailResponse,
@@ -74,7 +74,7 @@ access_logger = logging.getLogger("handwechat.api.access")
 _HEALTH_PATH = "/api/v1/health"
 _MESSAGES_PATH = "/api/v1/messages"
 _LOGS_PATH = "/api/v1/logs"
-_DEDUP_PATH = "/api/v1/ocr/dedup"
+_HISTORY_PATH = "/api/v1/ocr/history"
 _MAX_LOG_CONTENT = 200
 
 
@@ -84,7 +84,7 @@ def _is_diagnostic_path(path: str) -> bool:
     return (
         path == _LOGS_PATH
         or path.startswith(_LOGS_PATH + "/")
-        or path == _DEDUP_PATH
+        or path == _HISTORY_PATH
     )
 
 
@@ -149,13 +149,17 @@ def _health_snapshot(service, status_code: int) -> tuple[bool, dict]:
     return healthy, extra
 
 
-def _message_response(item) -> MessageResponse:
+def _message_response(item, *, is_latest: bool = False) -> MessageResponse:
     return MessageResponse(
         id=item.id,
         cursor=item.cursor,
         sender=item.sender,
         content=item.content,
         received_at=item.received_at,
+        is_latest=is_latest,
+        confidence=(
+            1.0 if is_latest else float(getattr(item, "confidence", 1.0))
+        ),
     )
 
 
@@ -327,7 +331,10 @@ def create_app(
         if items:
             request.state.access_extra = {"items": _log_items(items)}
         return MessageListResponse(
-            items=[_message_response(item) for item in items],
+            items=[
+                _message_response(item, is_latest=index == len(items) - 1)
+                for index, item in enumerate(items)
+            ],
             next_cursor=next_cursor,
             has_more=has_more,
             latest_cursor=service.message_cursor,
@@ -347,13 +354,13 @@ def create_app(
             service.read_log(name, lines=lines, keyword=keyword)
         )
 
-    @app.get("/api/v1/ocr/dedup", response_model=DedupQueueResponse)
-    def dedup_queue() -> DedupQueueResponse:
-        return DedupQueueResponse.model_validate(service.get_dedup_queue())
+    @app.get("/api/v1/ocr/history", response_model=HistoryResponse)
+    def ocr_history() -> HistoryResponse:
+        return HistoryResponse.model_validate(service.get_history())
 
-    @app.post("/api/v1/ocr/dedup/clear", response_model=DedupClearResponse)
-    def clear_dedup_queue() -> DedupClearResponse:
-        return DedupClearResponse.model_validate(service.clear_dedup_queue())
+    @app.post("/api/v1/ocr/history/clear", response_model=HistoryClearResponse)
+    def clear_ocr_history() -> HistoryClearResponse:
+        return HistoryClearResponse.model_validate(service.clear_history())
 
     @app.post(
         "/api/v1/send",
@@ -412,8 +419,10 @@ def create_app(
                         {
                             "type": "messages",
                             "items": [
-                                _message_response(item).model_dump()
-                                for item in items
+                                _message_response(
+                                    item, is_latest=index == len(items) - 1
+                                ).model_dump()
+                                for index, item in enumerate(items)
                             ],
                             "has_more": has_more,
                         }

@@ -29,8 +29,8 @@ class HealthResponse(BaseModel):
     send_task_active: int
     poll_interval: float
     max_send_per_minute: int
-    dedup_queue_size: int = 0
-    dedup_filtered_count: int = 0
+    history_capacity: int = 0
+    history_size: int = 0
     last_error: Optional[str] = None
 
 
@@ -44,6 +44,8 @@ class MessageResponse(BaseModel):
     sender: str
     content: str
     received_at: str
+    is_latest: bool = False
+    confidence: float = 1.0
 
 
 class MessageListResponse(BaseModel):
@@ -73,21 +75,22 @@ class LogTailResponse(BaseModel):
     lines: list[str] = Field(default_factory=list)
 
 
-class DedupItemResponse(BaseModel):
+class HistoryItemResponse(BaseModel):
     attr: str
     sender: str = ""
     text: str
+    confidence: float = 1.0
+    is_latest: bool = False
 
 
-class DedupQueueResponse(BaseModel):
+class HistoryResponse(BaseModel):
     running: bool
     capacity: int
     size: int
-    filtered_count: int
-    items: list[DedupItemResponse] = Field(default_factory=list)
+    items: list[HistoryItemResponse] = Field(default_factory=list)
 
 
-class DedupClearResponse(BaseModel):
+class HistoryClearResponse(BaseModel):
     cleared: int
 
 

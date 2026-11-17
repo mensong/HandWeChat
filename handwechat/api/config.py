@@ -20,7 +20,7 @@ class ApiConfig:
     ocr_log_file: str = "ocr.log"
     ocr_poll_interval: float = 2.0
     ocr_max_send_per_minute: int = 20
-    ocr_dedup_queue_size: int = 10
+    ocr_history_size: int = 10
     ws_batch_limit: int = 100
     ws_ping_interval: float = 20.0
 
@@ -51,8 +51,8 @@ class ApiConfig:
             ocr_max_send_per_minute=max(
                 1, int(data.get("ocr_max_send_per_minute") or 20)
             ),
-            ocr_dedup_queue_size=max(
-                1, int(data.get("ocr_dedup_queue_size") or 10)
+            ocr_history_size=max(
+                1, int(data.get("ocr_history_size") or 10)
             ),
             ws_batch_limit=max(1, int(data.get("ws_batch_limit") or 100)),
             ws_ping_interval=max(5.0, float(data.get("ws_ping_interval") or 20.0)),

@@ -110,17 +110,15 @@ class ApiService:
 
         channel = self.ocr_channel
         last_error = self._last_error
-        dedup_queue_size = 0
-        dedup_filtered_count = 0
+        history_capacity = 0
+        history_size = 0
         try:
             if channel is not None and channel.last_error:
                 last_error = channel.last_error
             if channel is not None:
                 channel_status = channel.status()
-                dedup_queue_size = int(channel_status.get("dedup_queue_size") or 0)
-                dedup_filtered_count = int(
-                    channel_status.get("dedup_filtered_count") or 0
-                )
+                history_capacity = int(channel_status.get("history_capacity") or 0)
+                history_size = int(channel_status.get("history_size") or 0)
         except Exception:
             pass
 
@@ -140,8 +138,8 @@ class ApiService:
             "send_task_active": self.send_tasks.active_count(),
             "poll_interval": self.config.ocr_poll_interval,
             "max_send_per_minute": self.config.ocr_max_send_per_minute,
-            "dedup_queue_size": dedup_queue_size,
-            "dedup_filtered_count": dedup_filtered_count,
+            "history_capacity": history_capacity,
+            "history_size": history_size,
             "last_error": last_error,
         }
 
@@ -235,25 +233,24 @@ class ApiService:
             raise LogNotFoundError(f"日志文件不存在：{name!r}")
         return candidate
 
-    def get_dedup_queue(self) -> dict:
+    def get_history(self) -> dict:
         channel = self.ocr_channel
         if channel is None:
             return {
                 "running": False,
-                "capacity": self.config.ocr_dedup_queue_size,
+                "capacity": self.config.ocr_history_size,
                 "size": 0,
-                "filtered_count": 0,
                 "items": [],
             }
-        snapshot = channel.dedup_snapshot()
+        snapshot = channel.history_snapshot()
         snapshot["running"] = bool(channel.running)
         return snapshot
 
-    def clear_dedup_queue(self) -> dict:
+    def clear_history(self) -> dict:
         channel = self.ocr_channel
         if channel is None:
             return {"cleared": 0}
-        return {"cleared": channel.clear_dedup_queue()}
+        return {"cleared": channel.clear_history()}
 
     def send(self, text: str) -> SendTask:
         channel = self._require_ocr_channel()
@@ -287,7 +284,7 @@ class ApiService:
             channel = factory(
                 poll_interval=self.config.ocr_poll_interval,
                 max_send_per_minute=self.config.ocr_max_send_per_minute,
-                dedup_queue_size=self.config.ocr_dedup_queue_size,
+                history_size=self.config.ocr_history_size,
                 state_path=app_data_path("ocr_listener_state.json"),
                 input_x_ratio=calibration.input_x_ratio,
                 input_y_ratio=calibration.input_y_ratio,
@@ -332,8 +329,8 @@ class ApiService:
                 "last_frame_signature": None,
                 "last_accepted_signature": None,
                 "ocr_skip_identical_count": 0,
-                "dedup_queue_size": self.config.ocr_dedup_queue_size,
-                "dedup_filtered_count": 0,
+                "history_capacity": self.config.ocr_history_size,
+                "history_size": 0,
                 "last_error": None,
             }
         return channel.status()

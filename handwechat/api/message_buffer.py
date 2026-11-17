@@ -26,6 +26,8 @@ class BufferedMessage:
     sender: str
     content: str
     received_at: str
+    is_latest: bool = False
+    confidence: float = 1.0
 
 
 class MessageBuffer:
@@ -60,6 +62,8 @@ class MessageBuffer:
                 sender=message.sender,
                 content=message.content,
                 received_at=str(message.extra.get("listen_time") or _now_text()),
+                is_latest=bool(getattr(message, "is_latest", False)),
+                confidence=float(getattr(message, "confidence", 1.0)),
             )
             self._messages.append(item)
             self._condition.notify_all()

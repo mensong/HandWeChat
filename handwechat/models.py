@@ -32,6 +32,8 @@ class BaseMessage:
     type: str
     index: int
     extra: dict = field(default_factory=dict)
+    is_latest: bool = False
+    confidence: float = 1.0
 
     def __post_init__(self) -> None:
         self.hash = make_message_hash(self.sender, self.content, self.index)

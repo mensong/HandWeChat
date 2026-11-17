@@ -71,7 +71,7 @@ class WeChatController(QObject):
         *,
         poll_interval: float = 2.0,
         max_send_per_minute: int = 20,
-        dedup_queue_size: int = 10,
+        history_size: int = 10,
         parent: Optional[QObject] = None,
     ) -> None:
         super().__init__(parent)
@@ -83,7 +83,7 @@ class WeChatController(QObject):
         self.channel = OcrChannel(
             poll_interval=poll_interval,
             max_send_per_minute=max_send_per_minute,
-            dedup_queue_size=dedup_queue_size,
+            history_size=history_size,
             state_path=app_data_path("ocr_listener_state.json"),
             input_x_ratio=calibration.input_x_ratio,
             input_y_ratio=calibration.input_y_ratio,
