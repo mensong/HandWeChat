@@ -406,19 +406,25 @@ class MainWindow(QMainWindow):
             self._on_ocr_calibration_failed,
         )
 
-    def _on_ocr_calibration_captured(self, image) -> None:
+    def _on_ocr_calibration_captured(self, capture) -> None:
         try:
             try:
                 calibration = load_ocr_calibration(self.OCR_CALIBRATION_PATH)
             except (OSError, ValueError):
                 calibration = OcrCalibration()
-            dialog = OcrCalibrationDialog(image, calibration, parent=self)
+            dialog = OcrCalibrationDialog(capture, calibration, parent=self)
             if dialog.exec() == QDialog.DialogCode.Accepted:
                 save_ocr_calibration(
                     dialog.calibration(),
                     self.OCR_CALIBRATION_PATH,
                 )
-                self._log(f"OCR 标定已保存：{self.OCR_CALIBRATION_PATH}")
+                window_text = (
+                    f"窗口 {capture.window_width}x{capture.window_height}"
+                    f"{'（最大化）' if capture.maximized else ''}"
+                )
+                self._log(
+                    f"OCR 标定已保存：{self.OCR_CALIBRATION_PATH}，{window_text}"
+                )
         except Exception as exc:
             self._log(f"OCR 标定保存失败：{type(exc).__name__}: {exc}")
         finally:

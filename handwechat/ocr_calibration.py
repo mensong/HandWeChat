@@ -11,6 +11,7 @@ from typing import Any
 
 
 RatioBox = tuple[float, float, float, float]
+WindowSize = tuple[int, int]
 
 
 def _now_text() -> str:
@@ -41,6 +42,23 @@ def _ratio_box(value: Any, name: str) -> RatioBox:
     return box
 
 
+def _window_size(value: Any) -> WindowSize | None:
+    """The calibrated physical window size, absent in older calibration files."""
+
+    if value is None:
+        return None
+    if not isinstance(value, (list, tuple)) or len(value) != 2:
+        raise ValueError("window_size 必须是 [width, height]")
+    try:
+        width = int(value[0])
+        height = int(value[1])
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"window_size 不是有效整数：{value!r}") from exc
+    if width <= 0 or height <= 0:
+        raise ValueError(f"window_size 必须是正数：{value!r}")
+    return width, height
+
+
 @dataclass(frozen=True)
 class OcrCalibration:
     input_x_ratio: float = 0.9352678571428571
@@ -57,15 +75,19 @@ class OcrCalibration:
         0.9196428571428571,
         0.7654320987654321,
     )
+    window_size: WindowSize | None = None
+    window_maximized: bool = False
     updated_at: str = ""
 
     def to_dict(self) -> dict:
         return {
-            "version": 1,
+            "version": 2,
             "input_x_ratio": self.input_x_ratio,
             "input_y_ratio": self.input_y_ratio,
             "title_box": list(self.title_box),
             "chat_box": list(self.chat_box),
+            "window_size": list(self.window_size) if self.window_size else None,
+            "window_maximized": bool(self.window_maximized),
             "updated_at": self.updated_at or _now_text(),
         }
 
@@ -78,6 +100,8 @@ class OcrCalibration:
             input_y_ratio=_ratio(data.get("input_y_ratio"), "input_y_ratio"),
             title_box=_ratio_box(data.get("title_box"), "title_box"),
             chat_box=_ratio_box(data.get("chat_box"), "chat_box"),
+            window_size=_window_size(data.get("window_size")),
+            window_maximized=bool(data.get("window_maximized")),
             updated_at=str(data.get("updated_at") or ""),
         )
 

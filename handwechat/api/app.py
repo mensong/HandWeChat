@@ -9,6 +9,7 @@ import json
 import logging
 import time
 from datetime import datetime, timezone
+from typing import Annotated
 
 from fastapi import (
     FastAPI,
@@ -20,6 +21,8 @@ from fastapi import (
 )
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import AfterValidator
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from handwechat.api.config import ApiConfig
@@ -67,6 +70,16 @@ def _http_error_code(status_code: int) -> str:
         status.HTTP_404_NOT_FOUND: "NOT_FOUND",
         status.HTTP_405_METHOD_NOT_ALLOWED: "METHOD_NOT_ALLOWED",
     }.get(status_code, "HTTP_ERROR")
+
+
+def _validate_message_cursor(value: int) -> int:
+    # cursor 仅接受 -1（尾部）或非负整数，其余走 422 INVALID_REQUEST
+    if value != -1 and value < 0:
+        raise ValueError("cursor 仅支持 -1 或非负整数")
+    return value
+
+
+MessageCursorParam = Annotated[int, Query(), AfterValidator(_validate_message_cursor)]
 
 
 access_logger = logging.getLogger("handwechat.api.access")
@@ -213,6 +226,12 @@ def create_app(
             media_type="text/html",
         )
 
+    app.mount(
+        "/static",
+        StaticFiles(directory=resource_path("handwechat/api/static")),
+        name="static",
+    )
+
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         try:
@@ -319,7 +338,7 @@ def create_app(
     @app.get("/api/v1/messages", response_model=MessageListResponse)
     def messages(
         request: Request,
-        cursor: int = Query(default=0, ge=0),
+        cursor: MessageCursorParam = 0,
         limit: int = Query(default=100, ge=1, le=100),
         timeout: int = Query(default=0, ge=0, le=30),
     ) -> MessageListResponse:

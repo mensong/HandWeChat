@@ -164,6 +164,13 @@ def main() -> None:
             assert payload["items"][0]["content"] == "hi"
             assert payload["has_more"] is False
 
+            tail = client.get("/api/v1/messages?cursor=-1&limit=1&timeout=0")
+            assert tail.status_code == 200, tail.text
+            payload = tail.json()
+            assert [item["sender"] for item in payload["items"]] == ["me"]
+            assert payload["has_more"] is False
+            assert payload["next_cursor"] == 2
+
             channel.emit_chat_changed("group")
             cleared = client.get("/api/v1/messages?cursor=0&limit=100&timeout=0")
             assert cleared.status_code == 200, cleared.text

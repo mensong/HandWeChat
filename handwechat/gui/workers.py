@@ -89,6 +89,8 @@ class WeChatController(QObject):
             input_y_ratio=calibration.input_y_ratio,
             title_box=calibration.title_box,
             chat_box=calibration.chat_box,
+            window_size=calibration.window_size,
+            window_maximized=calibration.window_maximized,
             on_message=self.bridge.emit_message,
             on_chat_changed=self.bridge.emit_chat_changed,
             on_error=self.bridge.emit_error,

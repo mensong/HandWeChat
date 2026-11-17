@@ -107,9 +107,14 @@ class MessageBuffer:
         limit: int = 100,
         timeout: float = 0.0,
     ) -> tuple[list[BufferedMessage], int, bool]:
-        normalized_cursor = max(0, int(cursor))
         normalized_limit = max(1, int(limit))
         with self._condition:
+            if cursor == -1:
+                # 尾部模式：立即返回最新的 limit 条；游标只向前，尾部之前的旧消息不再可拉
+                items = list(self._messages)[-normalized_limit:]
+                next_cursor = items[-1].cursor if items else self._cursor
+                return list(items), next_cursor, False
+            normalized_cursor = max(0, int(cursor))
             if timeout > 0:
                 self._condition.wait_for(
                     lambda: bool(self._items_after_locked(normalized_cursor)),

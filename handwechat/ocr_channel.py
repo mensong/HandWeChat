@@ -144,6 +144,14 @@ def _normalize_text(text: str) -> str:
 
 _UNKNOWN_SENDER = "对方"
 
+_CLOCK = r"\d{1,2}:\d{2}(?::\d{2})?"
+_DATE = r"(?:\d{4}[-/\.年]\d{1,2}[-/\.月]\d{1,2}日?|\d{1,2}[-/\.月]\d{1,2}日?)"
+_REL_DAY = r"(?:今天|昨天|前天|星期[一二三四五六日天]|周[一二三四五六日天])"
+_PERIOD = r"(?:上午|下午|凌晨|晚上|中午|早上|傍晚)?"
+_TIMESTAMP_PATTERN = re.compile(
+    rf"(?:{_DATE}|{_REL_DAY})?{_PERIOD}{_CLOCK}|{_DATE}|{_REL_DAY}"
+)
+
 
 def _message_signature(message: OcrMessage) -> str:
     """Identity used to tell "the message changed" apart from "same message".
@@ -446,6 +454,8 @@ class OcrChannel:
             0.9196428571428571,
             0.7654320987654321,
         ),
+        window_size: Optional[tuple[int, int]] = None,
+        window_maximized: bool = False,
         on_message: Optional[MessageCallback] = None,
         on_chat_changed: Optional[ChatChangedCallback] = None,
         on_error: Optional[ErrorCallback] = None,
@@ -462,6 +472,8 @@ class OcrChannel:
         self.input_y_ratio = min(0.99, max(0.01, float(input_y_ratio)))
         self.title_box = title_box
         self.chat_box = chat_box
+        self.window_size = self._valid_window_size(window_size)
+        self.window_maximized = bool(window_maximized)
         self.state_path = Path(state_path)
         self._reader = get_paddle_layout_reader()
         self._capture_queue: "queue.Queue[CapturedFrame]" = queue.Queue(maxsize=8)
@@ -675,6 +687,16 @@ class OcrChannel:
                 self._stop_event.wait(self.poll_interval)
                 continue
             hwnd, (left, top, right, bottom) = located
+            try:
+                if self._restore_window_size(hwnd):
+                    located = _find_wechat_window()
+                    if located is None:
+                        self._set_status_error("恢复窗口尺寸后未找到微信主窗口")
+                        self._stop_event.wait(self.poll_interval)
+                        continue
+                    hwnd, (left, top, right, bottom) = located
+            except Exception as exc:
+                self._report_error("OCR 恢复窗口尺寸", exc)
             if right <= left or bottom <= top:
                 self._set_status_error("微信窗口尺寸无效")
                 self._stop_event.wait(self.poll_interval)
@@ -962,7 +984,9 @@ class OcrChannel:
         return bool(value) and len(value) <= 32 and not self._is_timestamp_text(value)
 
     def _is_timestamp_text(self, text: str) -> bool:
-        return bool(re.fullmatch(r"\d{1,2}:\d{2}(?::\d{2})?|\d{4}", text.strip()))
+        # 只按形态匹配，不校验时分范围：OCR 会把 12:54 读成 12:64。
+        value = re.sub(r"\s+", "", text).replace("：", ":")
+        return bool(value) and bool(_TIMESTAMP_PATTERN.fullmatch(value))
 
     def _is_nickname_above_bubble(
         self, nickname: OcrLine, bubble_line: OcrLine
@@ -1266,6 +1290,79 @@ class OcrChannel:
             0,
             0x0001 | 0x0002 | 0x0010,
         )
+
+    @staticmethod
+    def _valid_window_size(
+        value: Optional[tuple[int, int]],
+    ) -> Optional[tuple[int, int]]:
+        if not value:
+            return None
+        try:
+            width, height = int(value[0]), int(value[1])
+        except (TypeError, ValueError, IndexError):
+            return None
+        if width <= 0 or height <= 0:
+            return None
+        return width, height
+
+    def _restore_window_size(self, hwnd: int) -> bool:
+        """Put WeChat back to its calibrated size before capturing pixels."""
+
+        target = self.window_size
+        if target is None:
+            return False
+        width, height = target
+        user32 = ctypes.windll.user32
+        if self.window_maximized:
+            if user32.IsZoomed(hwnd):
+                return False
+            user32.ShowWindow(hwnd, 3)  # SW_MAXIMIZE
+            time.sleep(0.15)
+            logger.info("OCR 窗口已恢复为最大化")
+            return True
+
+        changed = False
+        if user32.IsZoomed(hwnd) or user32.IsIconic(hwnd):
+            user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+            changed = True
+        rect = wintypes.RECT()
+        if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+            return changed
+        current_width = int(rect.right - rect.left)
+        current_height = int(rect.bottom - rect.top)
+        if abs(current_width - width) <= 2 and abs(current_height - height) <= 2:
+            return changed
+        user32.SetWindowPos.argtypes = [
+            wintypes.HWND,
+            wintypes.HWND,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            wintypes.UINT,
+        ]
+        user32.SetWindowPos.restype = wintypes.BOOL
+        resized = bool(
+            user32.SetWindowPos(
+                wintypes.HWND(hwnd),
+                wintypes.HWND(0),
+                0,
+                0,
+                width,
+                height,
+                0x0002 | 0x0004 | 0x0010,  # NOMOVE | NOZORDER | NOACTIVATE
+            )
+        )
+        if resized:
+            logger.info(
+                "OCR 窗口尺寸已恢复：%sx%s -> %sx%s",
+                current_width,
+                current_height,
+                width,
+                height,
+            )
+            time.sleep(0.15)
+        return resized or changed
 
     def _click_window_point(
         self, rect: tuple[int, int, int, int], x: int, y: int

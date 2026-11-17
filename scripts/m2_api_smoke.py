@@ -72,9 +72,14 @@ def main() -> None:
             assert wrong_method.status_code == 405, wrong_method.text
             assert wrong_method.json()["code"] == "METHOD_NOT_ALLOWED"
 
-            invalid_cursor = client.get("/api/v1/messages?cursor=-1")
+            invalid_cursor = client.get("/api/v1/messages?cursor=-2")
             assert invalid_cursor.status_code == 422, invalid_cursor.text
             assert invalid_cursor.json()["code"] == "INVALID_REQUEST"
+
+            tail = client.get("/api/v1/messages?cursor=-1&limit=100")
+            assert tail.status_code == 200, tail.text
+            assert tail.json()["items"] == []
+            assert tail.json()["next_cursor"] == 0
 
             ocr_channel._find_wechat_window = lambda: (HWND, (0, 0, 100, 100))
 

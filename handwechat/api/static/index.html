@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>HandWeChat 当前聊天</title>
-  <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+  <script src="/static/lucide.min.js"></script>
   <style>
     :root {
       color-scheme: light;
@@ -702,7 +702,7 @@
     const WS_RETRY_DELAYS = [1000, 2000, 5000, 10000];
 
     const state = {
-      cursor: 0,
+      cursor: -1,
       messageCount: 0,
       messageMode: "ws",
       pollTimer: null,
@@ -893,10 +893,13 @@
     async function refreshMessages() {
       try {
         const data = await request(`/api/v1/messages?cursor=${state.cursor}&limit=100&timeout=1`);
-        // 服务端进程重启后游标会从头开始，检测到回退就丢弃旧游标重新读缓冲区
-        const restarted = typeof data.latest_cursor === "number" && data.latest_cursor < state.cursor;
+        // 服务端进程重启后游标会从头开始，检测到回退就重新拉取最新尾部
+        const restarted =
+          typeof data.latest_cursor === "number" &&
+          state.cursor >= 0 &&
+          data.latest_cursor < state.cursor;
         renderMessages(data.items || []);
-        state.cursor = restarted ? 0 : (data.next_cursor ?? state.cursor);
+        state.cursor = restarted ? -1 : (data.next_cursor ?? state.cursor);
         clearError();
       } catch (error) {
         showError(error);
