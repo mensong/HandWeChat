@@ -37,6 +37,9 @@ class GatewayConfig:
     breaker_threshold: int = 2
     breaker_cooldown_seconds: float = 30.0
     config_reload_seconds: float = 2.0
+    health_poll_seconds: float = 2.0
+    send_result_poll_seconds: float = 0.5
+    send_result_timeout_seconds: float = 30.0
     log_dir: str = "data/logs"
     gateway_log_file: str = "gateway.log"
     apps: list[GatewayAppConfig] = field(default_factory=list)
@@ -90,6 +93,15 @@ class GatewayConfig:
             ),
             config_reload_seconds=max(
                 0.5, _as_float(data.get("config_reload_seconds"), 2.0)
+            ),
+            health_poll_seconds=max(
+                0.2, _as_float(data.get("health_poll_seconds"), 2.0)
+            ),
+            send_result_poll_seconds=max(
+                0.05, _as_float(data.get("send_result_poll_seconds"), 0.5)
+            ),
+            send_result_timeout_seconds=max(
+                1.0, _as_float(data.get("send_result_timeout_seconds"), 30.0)
             ),
             log_dir=str(data.get("log_dir") or "data/logs"),
             gateway_log_file=str(data.get("gateway_log_file") or "gateway.log"),

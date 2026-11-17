@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""上游 HandWeChat 客户端：订阅 WS 推送、背压入队、代发回复。"""
+"""上游 HandWeChat 客户端：订阅 WS、背压入队、健康快照、代发与任务查询。"""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import asyncio
 import json
 import logging
 import urllib.request
+from typing import Awaitable, Callable
 
 import websockets
 
@@ -15,7 +16,9 @@ from handwechat.gateway.models import IncomingMessage
 
 logger = logging.getLogger("handwechat.gateway")
 
-_SEND_TIMEOUT_S = 10.0
+_REQUEST_TIMEOUT_S = 10.0
+
+HealthCallback = Callable[[dict | None], Awaitable[None]]
 
 
 class UpstreamClient:
@@ -27,6 +30,8 @@ class UpstreamClient:
         self.connected = False
         self.last_error: str | None = None
         self.received = 0
+        self.health: dict | None = None
+        self.health_error: str | None = None
 
     def update_config(self, config: GatewayConfig) -> None:
         self._config = config
@@ -34,6 +39,21 @@ class UpstreamClient:
     @property
     def ws_url(self) -> str:
         return self._config.upstream_ws_url
+
+    def context(self) -> dict:
+        """最近一次健康检查得到的当前上下文，供 welcome 和状态接口使用。"""
+
+        health = self.health or {}
+        return {
+            "online": bool(health.get("online", False)),
+            "listener_running": bool(health.get("listener_running", False)),
+            "attached": bool(health.get("attached", False)),
+            "chat_title": str(health.get("chat_title") or ""),
+            "chat_type": health.get("chat_type"),
+            "health_ok": self.health is not None and self.health_error is None,
+            "health_error": self.health_error,
+            "upstream_connected": self.connected,
+        }
 
     async def run(self) -> None:
         while True:
@@ -47,6 +67,38 @@ class UpstreamClient:
             finally:
                 self.connected = False
             await asyncio.sleep(max(0.5, self._config.reconnect_seconds))
+
+    async def poll_health(self, interval: float, on_change: HealthCallback) -> None:
+        """定期读取 /api/v1/health，把变化交给调用方广播。"""
+
+        interval = max(0.2, float(interval))
+        while True:
+            try:
+                self.health = await asyncio.to_thread(
+                    self._get_json, "/api/v1/health"
+                )
+                self.health_error = None
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self.health_error = f"{type(exc).__name__}: {exc}"
+            try:
+                await on_change(self.health)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("上游健康状态回调失败")
+            await asyncio.sleep(interval)
+
+    async def send_text(self, text: str) -> dict:
+        return await asyncio.to_thread(
+            self._post_json, "/api/v1/send", {"text": text}
+        )
+
+    async def fetch_send_task(self, task_id: str) -> dict:
+        return await asyncio.to_thread(
+            self._get_json, f"/api/v1/send/{task_id}"
+        )
 
     async def _connect_once(self) -> None:
         async with websockets.connect(
@@ -88,19 +140,30 @@ class UpstreamClient:
             # 队列满时阻塞读协程，把背压传回上游，而不是丢弃消息。
             await self._queue.put(message)
 
-    async def send_text(
-        self, text: str, *, app_id: str, dispatch_id: str = ""
-    ) -> dict:
-        return await asyncio.to_thread(self._post_send, text)
-
-    def _post_send(self, text: str) -> dict:
-        data = json.dumps({"text": text}, ensure_ascii=False).encode("utf-8")
+    def _get_json(self, path: str) -> dict:
         request = urllib.request.Request(
-            self._config.upstream_http_url.rstrip("/") + "/api/v1/send",
+            self._base_url() + path,
+            method="GET",
+        )
+        with urllib.request.urlopen(request, timeout=_REQUEST_TIMEOUT_S) as response:
+            return _loads(response.read())
+
+    def _post_json(self, path: str, payload: dict) -> dict:
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        request = urllib.request.Request(
+            self._base_url() + path,
             data=data,
             headers={"Content-Type": "application/json; charset=utf-8"},
             method="POST",
         )
-        with urllib.request.urlopen(request, timeout=_SEND_TIMEOUT_S) as response:
-            body = response.read().decode("utf-8", errors="replace")
-        return json.loads(body) if body else {}
+        with urllib.request.urlopen(request, timeout=_REQUEST_TIMEOUT_S) as response:
+            return _loads(response.read())
+
+    def _base_url(self) -> str:
+        return self._config.upstream_http_url.rstrip("/")
+
+
+def _loads(raw: bytes) -> dict:
+    if not raw:
+        return {}
+    return json.loads(raw.decode("utf-8", errors="replace"))

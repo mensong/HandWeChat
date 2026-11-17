@@ -16,8 +16,10 @@ from handwechat.gateway.config import GatewayConfig
 from handwechat.gateway.dispatcher import Dispatcher, GatewayStats
 from handwechat.gateway.hub import AppHub
 from handwechat.gateway.logging_setup import configure_gateway_logging
+from handwechat.gateway.models import now_iso
 from handwechat.gateway.pin import PinManager
 from handwechat.gateway.registry import AppRegistry
+from handwechat.gateway.sends import SendCoordinator
 from handwechat.gateway.upstream import UpstreamClient
 from handwechat.paths import app_data_path, app_path
 
@@ -46,14 +48,22 @@ def create_app(
     pins = PinManager()
     queue: asyncio.Queue = asyncio.Queue(maxsize=max(1, config.queue_size))
     upstream = UpstreamClient(config, queue)
-    hub = AppHub(registry, pins, config=config, send_text=upstream.send_text)
+    hub = AppHub(registry, pins, config=config)
+    sender = SendCoordinator(
+        upstream,
+        hub.send_to,
+        poll_interval=config.send_result_poll_seconds,
+        timeout=config.send_result_timeout_seconds,
+    )
+    hub.set_sender(sender.send_from_app)
+    hub.set_context_provider(upstream.context)
     stats = GatewayStats()
     dispatcher = Dispatcher(
         registry,
         pins,
         config=config,
         offer=hub.offer,
-        send_reply=upstream.send_text,
+        send_reply=sender.send_for_decision,
         notify_pin_expired=hub.send_pin_expired,
         stats=stats,
         queue=queue,
@@ -61,9 +71,39 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
+        health_state: dict[str, dict | None] = {"context": None}
+
+        async def _on_health(_health: dict | None) -> None:
+            context = upstream.context()
+            previous = health_state["context"]
+            health_state["context"] = context
+            if previous is None:
+                return
+            if any(
+                previous.get(key) != context.get(key)
+                for key in ("online", "listener_running", "attached", "health_ok")
+            ):
+                await hub.broadcast({"type": "upstream_state", **context})
+            if (
+                previous.get("chat_title") != context.get("chat_title")
+                or previous.get("chat_type") != context.get("chat_type")
+            ):
+                await hub.broadcast(
+                    {
+                        "type": "chat_changed",
+                        "chat_title": context["chat_title"],
+                        "chat_type": context["chat_type"],
+                        "occurred_at": now_iso(),
+                    }
+                )
+
         tasks = [
             asyncio.create_task(upstream.run(), name="gateway-upstream"),
             asyncio.create_task(dispatcher.run(), name="gateway-dispatcher"),
+            asyncio.create_task(
+                upstream.poll_health(config.health_poll_seconds, _on_health),
+                name="gateway-health",
+            ),
         ]
         if watch_path is not None:
             tasks.append(
@@ -86,6 +126,7 @@ def create_app(
             yield
         finally:
             dispatcher.close()
+            await sender.close()
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
@@ -95,10 +136,18 @@ def create_app(
 
     @app.get("/api/v1/gateway/health")
     def health() -> dict:
+        context = upstream.context()
+        healthy = bool(
+            context["upstream_connected"]
+            and context["online"]
+            and context["health_ok"]
+        )
         return {
-            "status": "ok",
-            "upstream_connected": upstream.connected,
+            "status": "ok" if healthy else "degraded",
+            **context,
+            "upstream_url": upstream.ws_url,
             "last_error": upstream.last_error,
+            "received": upstream.received,
         }
 
     @app.get("/api/v1/gateway/status")
@@ -130,6 +179,7 @@ def create_app(
                 "last_error": upstream.last_error,
                 "received": upstream.received,
             },
+            "context": upstream.context(),
             "queue": {
                 "size": dispatcher.queue.qsize(),
                 "capacity": dispatcher.queue.maxsize,

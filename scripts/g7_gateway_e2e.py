@@ -57,6 +57,16 @@ class FakeUpstream:
         self.port = port
         self.queue: asyncio.Queue[dict] = asyncio.Queue()
         self.sent: list[str] = []
+        self.health = {
+            "status": "ok",
+            "online": True,
+            "listener_running": True,
+            "attached": True,
+            "chat_title": "群聊A",
+            "chat_type": "group",
+        }
+        self.tasks: dict[str, dict] = {}
+        self.task_seq = 0
         self.app = self._build()
 
     @property
@@ -81,12 +91,42 @@ class FakeUpstream:
             except Exception:
                 return
 
+        @app.get("/api/v1/health")
+        async def health() -> dict:
+            return self.health
+
         @app.post("/api/v1/send")
         async def send(body: dict) -> dict:
-            self.sent.append(str(body.get("text") or ""))
-            return {"task_id": f"t{len(self.sent)}", "status": "queued"}
+            text = str(body.get("text") or "")
+            self.sent.append(text)
+            self.task_seq += 1
+            task_id = f"t{self.task_seq}"
+            self.tasks[task_id] = {
+                "task_id": task_id,
+                "status": "queued",
+                "text": text,
+            }
+            asyncio.get_running_loop().create_task(self._complete(task_id))
+            return {"task_id": task_id, "status": "queued"}
+
+        @app.get("/api/v1/send/{task_id}")
+        async def send_task(task_id: str) -> dict:
+            return self.tasks.get(
+                task_id,
+                {
+                    "task_id": task_id,
+                    "status": "failed",
+                    "error_code": "SEND_TASK_NOT_FOUND",
+                },
+            )
 
         return app
+
+    async def _complete(self, task_id: str) -> None:
+        await asyncio.sleep(0.2)
+        task = self.tasks.get(task_id)
+        if task is not None:
+            task["status"] = "success"
 
 
 async def wait_started(server: uvicorn.Server, name: str) -> None:
@@ -115,28 +155,71 @@ async def wait_upstream_connected(port: int) -> None:
     raise RuntimeError("网关未能连上假上游")
 
 
-async def wait_sent(upstream: FakeUpstream, expected: list[str]) -> None:
+async def wait_health_ready(port: int) -> None:
     for _ in range(100):
-        if upstream.sent == expected:
+        status = await asyncio.to_thread(
+            _get_json, f"http://127.0.0.1:{port}/api/v1/gateway/status"
+        )
+        if status.get("context", {}).get("health_ok"):
+            stage("gateway health ready")
             return
         await asyncio.sleep(0.05)
-    raise AssertionError(f"实际发送内容不符：{upstream.sent}")
+    raise RuntimeError("网关未能读取上游健康状态")
 
 
-async def consumer(app_id: str, port: int, decide, observed: list, clients: dict) -> None:
+async def wait_until(predicate, label: str, timeout: float = 5.0) -> None:
+    for _ in range(int(timeout / 0.05)):
+        if predicate():
+            return
+        await asyncio.sleep(0.05)
+    raise AssertionError(f"等待超时：{label}")
+
+
+async def wait_sent(upstream: FakeUpstream, expected: list[str]) -> None:
+    await wait_until(lambda: upstream.sent == expected, f"发送内容 {expected}")
+
+
+async def consumer(
+    app_id: str,
+    port: int,
+    decide,
+    observed: list,
+    clients: dict,
+    send_results: list,
+    chat_changes: list,
+    states: list,
+    welcomes: dict,
+) -> None:
+    holder: dict = {}
+
     def on_offer(offer: Offer) -> dict:
         observed.append(
-            {"app": app_id, "content": offer.content, "pinned": offer.pinned}
+            {
+                "app": app_id,
+                "content": offer.content,
+                "pinned": offer.pinned,
+                "dispatch_id": offer.dispatch_id,
+            }
         )
         return decide(app_id, offer.content)
+
+    def on_connected(_pin) -> None:
+        client = holder.get("client")
+        if client is not None:
+            welcomes[app_id] = client.context
 
     client = GatewayClient(
         app_id=app_id,
         token="t",
         url=f"ws://127.0.0.1:{port}/api/v1/gateway/ws/app",
         on_offer=on_offer,
+        on_connected=on_connected,
+        on_send_result=send_results.append,
+        on_chat_changed=chat_changes.append,
+        on_upstream_state=states.append,
         reconnect_seconds=0.5,
     )
+    holder["client"] = client
     clients[app_id] = client
     await client.run()
 
@@ -147,7 +230,9 @@ async def main() -> None:
 
     upstream = FakeUpstream(upstream_port)
     upstream_server = uvicorn.Server(
-        uvicorn.Config(upstream.app, host="127.0.0.1", port=upstream_port, log_level="critical")
+        uvicorn.Config(
+            upstream.app, host="127.0.0.1", port=upstream_port, log_level="critical"
+        )
     )
     upstream_task = asyncio.create_task(upstream_server.serve())
     await wait_started(upstream_server, "fake-upstream")
@@ -164,24 +249,37 @@ async def main() -> None:
                 listen_port=gateway_port,
                 heartbeat_seconds=0,
                 round_deadline_ms=3000,
+                health_poll_seconds=0.2,
+                send_result_poll_seconds=0.05,
+                send_result_timeout_seconds=5,
                 log_dir=tmp,
                 apps=[
                     GatewayAppConfig(id="checkin", priority=10, token="t"),
-                    GatewayAppConfig(id="game", priority=100, token="t", hold_seconds=60),
+                    GatewayAppConfig(
+                        id="game", priority=100, token="t", hold_seconds=60
+                    ),
                     GatewayAppConfig(id="bot", priority=999, token="t"),
                 ],
             )
             gateway_app = create_app(config=config)
             gateway_server = uvicorn.Server(
                 uvicorn.Config(
-                    gateway_app, host="127.0.0.1", port=gateway_port, log_level="critical"
+                    gateway_app,
+                    host="127.0.0.1",
+                    port=gateway_port,
+                    log_level="critical",
                 )
             )
             gateway_task = asyncio.create_task(gateway_server.serve())
             await wait_started(gateway_server, "gateway")
             await wait_upstream_connected(gateway_port)
+            await wait_health_ready(gateway_port)
 
             observed: list[dict] = []
+            send_results: list = []
+            chat_changes: list = []
+            states: list = []
+            welcomes: dict = {}
 
             def decide(app_id: str, content: str) -> dict:
                 if app_id == "game":
@@ -205,47 +303,156 @@ async def main() -> None:
             clients: dict[str, GatewayClient] = {}
             consumers = [
                 asyncio.create_task(
-                    consumer("checkin", gateway_port, decide, observed, clients)
+                    consumer(
+                        "checkin",
+                        gateway_port,
+                        decide,
+                        observed,
+                        clients,
+                        send_results,
+                        chat_changes,
+                        states,
+                        welcomes,
+                    )
                 ),
                 asyncio.create_task(
-                    consumer("game", gateway_port, decide, observed, clients)
+                    consumer(
+                        "game",
+                        gateway_port,
+                        decide,
+                        observed,
+                        clients,
+                        send_results,
+                        chat_changes,
+                        states,
+                        welcomes,
+                    )
                 ),
                 asyncio.create_task(
-                    consumer("bot", gateway_port, decide, observed, clients)
+                    consumer(
+                        "bot",
+                        gateway_port,
+                        decide,
+                        observed,
+                        clients,
+                        send_results,
+                        chat_changes,
+                        states,
+                        welcomes,
+                    )
                 ),
             ]
-            await asyncio.sleep(0.3)
+            await wait_until(
+                lambda: len(clients) == 3 and len(welcomes) == 3,
+                "应用全部握手",
+            )
             stage("consumers connected")
 
-            await upstream.queue.put({"type": "messages", "items": [item(1, "开始数字游戏")]})
+            await upstream.queue.put(
+                {"type": "messages", "items": [item(1, "开始数字游戏")]}
+            )
             await wait_sent(upstream, ["游戏开始"])
             stage("message 1 consumed by game")
 
-            await upstream.queue.put({"type": "messages", "items": [item(2, "42")]})
+            await upstream.queue.put(
+                {"type": "messages", "items": [item(2, "42")]}
+            )
             await wait_sent(upstream, ["游戏开始", "签到成功"])
             stage("message 2: pinned game skipped, checkin consumed")
 
-            await upstream.queue.put({"type": "messages", "items": [item(3, "你好")]})
+            await upstream.queue.put(
+                {"type": "messages", "items": [item(3, "你好")]}
+            )
             await wait_sent(upstream, ["游戏开始", "签到成功", "bot"])
             stage("message 3: fallback bot consumed")
 
-            await clients["bot"].send("主动消息")
+            await clients["bot"].send("主动消息", request_id="r1")
             await wait_sent(
                 upstream, ["游戏开始", "签到成功", "bot", "主动消息"]
             )
-            stage("proactive send works")
+            await wait_until(
+                lambda: any(
+                    result.request_id == "r1" and result.final
+                    for result in send_results
+                ),
+                "主动发送的最终回执",
+            )
+            proactive = [
+                result
+                for result in send_results
+                if result.request_id == "r1" and result.final
+            ][0]
+            assert proactive.status == "success" and proactive.ok, proactive
+            stage("proactive send result works")
 
-            assert {"app": "bot", "content": "开始数字游戏", "pinned": False} not in observed
-            assert {"app": "bot", "content": "42", "pinned": False} not in observed
-            assert {"app": "bot", "content": "你好", "pinned": False} in observed
-            assert {"app": "game", "content": "42", "pinned": True} in observed
+            def saw(app_id: str, content: str, pinned: bool) -> bool:
+                return any(
+                    entry["app"] == app_id
+                    and entry["content"] == content
+                    and entry["pinned"] is pinned
+                    for entry in observed
+                )
+
+            assert not saw("bot", "开始数字游戏", False)
+            assert not saw("bot", "42", False)
+            assert saw("bot", "你好", False)
+            assert saw("game", "42", True)
+
+            assert welcomes["game"].chat_title == "群聊A", welcomes["game"]
+            assert welcomes["game"].listener_running is True, welcomes["game"]
+
+            first_dispatch = [
+                entry["dispatch_id"]
+                for entry in observed
+                if entry["app"] == "game" and entry["content"] == "开始数字游戏"
+            ][0]
+            queued = [
+                result
+                for result in send_results
+                if result.dispatch_id == first_dispatch and not result.final
+            ]
+            assert queued and queued[0].status == "queued", queued
+            await wait_until(
+                lambda: any(
+                    result.dispatch_id == first_dispatch and result.final
+                    for result in send_results
+                ),
+                "决策回复的最终回执",
+            )
+            final = [
+                result
+                for result in send_results
+                if result.dispatch_id == first_dispatch and result.final
+            ][0]
+            assert final.status == "success" and final.ok, final
+            stage("decision reply result works")
+
+            upstream.health["chat_title"] = "群聊B"
+            upstream.health["listener_running"] = False
+            await wait_until(
+                lambda: any(change.chat_title == "群聊B" for change in chat_changes),
+                "聊天切换推送",
+            )
+            await wait_until(
+                lambda: any(state.listener_running is False for state in states),
+                "监听状态推送",
+            )
+            health = await asyncio.to_thread(
+                _get_json,
+                f"http://127.0.0.1:{gateway_port}/api/v1/gateway/health",
+            )
+            assert health["status"] == "ok", health
+            assert health["chat_title"] == "群聊B", health
+            stage("chat/state push and health endpoint work")
 
             status = await asyncio.to_thread(
-                _get_json, f"http://127.0.0.1:{gateway_port}/api/v1/gateway/status"
+                _get_json,
+                f"http://127.0.0.1:{gateway_port}/api/v1/gateway/status",
             )
             assert status["pin"]["app_id"] == "game", status["pin"]
             assert status["stats"]["dispatched"] == 3, status["stats"]
             assert status["stats"]["consumed"] == 3, status["stats"]
+            assert status["context"]["chat_title"] == "群聊B", status["context"]
             stage("status verified")
     finally:
         close_gateway_logging()
@@ -261,7 +468,10 @@ async def main() -> None:
         upstream_task.cancel()
         await asyncio.gather(upstream_task, return_exceptions=True)
 
-    print("PASS 端到端：顺序询问、首个消费停止、置顶优先与回落、网关代发", flush=True)
+    print(
+        "PASS 端到端：顺序询问、置顶、代发回执、聊天与状态推送、健康接口",
+        flush=True,
+    )
 
 
 if __name__ == "__main__":

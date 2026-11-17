@@ -85,16 +85,21 @@ class AppHub:
         *,
         config: GatewayConfig,
         send_text=None,
+        context_provider=None,
     ) -> None:
         self._registry = registry
         self._pins = pin_manager
         self._config = config
         self._send_text = send_text
+        self._context_provider = context_provider
         self._connections: dict[str, AppConnection] = {}
         self._pending_events: dict[str, list[dict]] = {}
 
     def set_sender(self, send_text) -> None:
         self._send_text = send_text
+
+    def set_context_provider(self, context_provider) -> None:
+        self._context_provider = context_provider
 
     def update_config(self, config: GatewayConfig) -> None:
         self._config = config
@@ -137,6 +142,7 @@ class AppHub:
                     "app_id": app_id,
                     "heartbeat_seconds": self._config.heartbeat_seconds,
                     "pin": pin.to_payload() if pin and pin.app_id == app_id else None,
+                    "context": self._context(),
                 }
             )
             await self._flush_pending_events(app_id, connection)
@@ -214,6 +220,23 @@ class AppHub:
         except Exception:
             self._queue_event(pin.app_id, payload)
 
+    async def send_to(self, app_id: str, payload: dict) -> bool:
+        connection = self._connections.get(app_id)
+        if connection is None:
+            return False
+        try:
+            await connection.send_json(payload)
+            return True
+        except Exception:
+            return False
+
+    async def broadcast(self, payload: dict) -> None:
+        for connection in list(self._connections.values()):
+            try:
+                await connection.send_json(payload)
+            except Exception:
+                continue
+
     async def close(self, app_id: str) -> None:
         connection = self._connections.pop(app_id, None)
         if connection is None:
@@ -256,6 +279,7 @@ class AppHub:
                         self._send_from_app(
                             connection.app_id,
                             text,
+                            str(payload.get("request_id") or ""),
                             str(payload.get("dispatch_id") or ""),
                         )
                     )
@@ -278,24 +302,26 @@ class AppHub:
                 return
 
     async def _send_from_app(
-        self, app_id: str, text: str, dispatch_id: str
+        self, app_id: str, text: str, request_id: str, dispatch_id: str
     ) -> None:
         try:
-            await self._send_text(text, app_id=app_id, dispatch_id=dispatch_id)
-            logger.info(
-                json.dumps(
-                    {
-                        "event": "reply",
-                        "app_id": app_id,
-                        "dispatch_id": dispatch_id,
-                        "text": text[:200],
-                    },
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                )
+            await self._send_text(
+                text,
+                app_id=app_id,
+                request_id=request_id,
+                dispatch_id=dispatch_id,
             )
         except Exception as exc:
             logger.warning("应用 %s 主动发送失败：%s", app_id, exc)
+
+    def _context(self) -> dict:
+        if self._context_provider is None:
+            return {}
+        try:
+            return self._context_provider()
+        except Exception:
+            logger.debug("读取上游上下文失败", exc_info=True)
+            return {}
 
     def _queue_event(self, app_id: str, payload: dict) -> None:
         events = self._pending_events.setdefault(app_id, [])

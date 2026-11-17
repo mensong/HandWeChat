@@ -72,12 +72,12 @@ $initLines = @(
     "# -*- coding: utf-8 -*-",
     '"""HandWeChat message gateway consumer SDK."""',
     "",
-    "from $packageName.client import GatewayClient, Offer, PinInfo",
+    "from $packageName.client import GatewayClient, Offer, PinInfo, GatewayContext, SendResult, ChatInfo",
     "from $packageName.protocol import Decision",
     "",
     ('__version__ = "' + $Version + '"'),
     "",
-    '__all__ = ["GatewayClient", "Offer", "PinInfo", "Decision"]',
+    '__all__ = ["GatewayClient", "Offer", "PinInfo", "GatewayContext", "SendResult", "ChatInfo", "Decision"]',
     ""
 )
 [IO.File]::WriteAllText(

@@ -3,7 +3,16 @@
 
 from __future__ import annotations
 
-__all__ = ["create_app", "GatewayClient", "Offer", "PinInfo", "Decision"]
+__all__ = [
+    "create_app",
+    "GatewayClient",
+    "Offer",
+    "PinInfo",
+    "GatewayContext",
+    "SendResult",
+    "ChatInfo",
+    "Decision",
+]
 
 
 def create_app(*args, **kwargs):
@@ -15,7 +24,14 @@ def create_app(*args, **kwargs):
 
 
 def __getattr__(name: str):
-    if name in ("GatewayClient", "Offer", "PinInfo"):
+    if name in (
+        "GatewayClient",
+        "Offer",
+        "PinInfo",
+        "GatewayContext",
+        "SendResult",
+        "ChatInfo",
+    ):
         from handwechat.gateway import client
 
         return getattr(client, name)

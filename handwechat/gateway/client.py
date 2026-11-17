@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import inspect
 import json
 import logging
@@ -89,6 +89,83 @@ PinHandler = Callable[[PinInfo], Any]
 ConnectHandler = Callable[[Optional[PinInfo]], Any]
 
 
+@dataclass(frozen=True)
+class GatewayContext:
+    """微信与 OCR 监听的上游状态，来自 welcome 和后续状态推送。"""
+
+    online: bool = False
+    listener_running: bool = False
+    attached: bool = False
+    chat_title: str = ""
+    chat_type: Optional[str] = None
+    health_ok: bool = False
+    upstream_connected: bool = False
+
+    @classmethod
+    def from_payload(cls, payload: dict) -> "GatewayContext":
+        data = payload if isinstance(payload, dict) else {}
+        return cls(
+            online=bool(data.get("online", False)),
+            listener_running=bool(data.get("listener_running", False)),
+            attached=bool(data.get("attached", False)),
+            chat_title=str(data.get("chat_title") or ""),
+            chat_type=data.get("chat_type"),
+            health_ok=bool(data.get("health_ok", False)),
+            upstream_connected=bool(data.get("upstream_connected", False)),
+        )
+
+
+@dataclass(frozen=True)
+class ChatInfo:
+    chat_title: str = ""
+    chat_type: Optional[str] = None
+    occurred_at: Optional[str] = None
+
+    @classmethod
+    def from_payload(cls, payload: dict) -> "ChatInfo":
+        data = payload if isinstance(payload, dict) else {}
+        return cls(
+            chat_title=str(data.get("chat_title") or ""),
+            chat_type=data.get("chat_type"),
+            occurred_at=data.get("occurred_at"),
+        )
+
+
+@dataclass(frozen=True)
+class SendResult:
+    """网关代发的回执：final=False 是入队结果，final=True 是最终结果。"""
+
+    task_id: str = ""
+    offer_id: str = ""
+    request_id: str = ""
+    dispatch_id: str = ""
+    status: str = ""
+    ok: bool = False
+    final: bool = False
+    error: Optional[str] = None
+    error_code: Optional[str] = None
+
+    @classmethod
+    def from_payload(cls, payload: dict) -> "SendResult":
+        data = payload if isinstance(payload, dict) else {}
+        return cls(
+            task_id=str(data.get("task_id") or ""),
+            offer_id=str(data.get("offer_id") or ""),
+            request_id=str(data.get("request_id") or ""),
+            dispatch_id=str(data.get("dispatch_id") or ""),
+            status=str(data.get("status") or ""),
+            ok=bool(data.get("ok", False)),
+            final=bool(data.get("final", False)),
+            error=data.get("error"),
+            error_code=data.get("error_code"),
+        )
+
+
+SendResultHandler = Callable[[SendResult], Any]
+ChatHandler = Callable[[ChatInfo], Any]
+StateHandler = Callable[[GatewayContext], Any]
+
+
 class GatewayClient:
     """自动重连、自动回 decision 的消费应用客户端。
 
@@ -105,6 +182,9 @@ class GatewayClient:
         on_offer: Optional[OfferHandler] = None,
         on_pin_expired: Optional[PinHandler] = None,
         on_connected: Optional[ConnectHandler] = None,
+        on_send_result: Optional[SendResultHandler] = None,
+        on_chat_changed: Optional[ChatHandler] = None,
+        on_upstream_state: Optional[StateHandler] = None,
         reconnect_seconds: float = 3.0,
         handshake_timeout: float = 10.0,
         logger: Optional[logging.Logger] = None,
@@ -115,12 +195,16 @@ class GatewayClient:
         self.on_offer = on_offer
         self.on_pin_expired = on_pin_expired
         self.on_connected = on_connected
+        self.on_send_result = on_send_result
+        self.on_chat_changed = on_chat_changed
+        self.on_upstream_state = on_upstream_state
         self.reconnect_seconds = max(0.5, float(reconnect_seconds))
         self.handshake_timeout = max(1.0, float(handshake_timeout))
         self.logger = logger or logging.getLogger("handwechat.gateway.client")
 
         self.connected = False
         self.pin: Optional[PinInfo] = None
+        self.context: Optional[GatewayContext] = None
         self._socket = None
         self._stopped = False
         self._send_lock = asyncio.Lock()
@@ -162,10 +246,14 @@ class GatewayClient:
             except Exception:
                 pass
 
-    async def send(self, text: str, dispatch_id: str = "") -> None:
+    async def send(
+        self, text: str, request_id: str = "", dispatch_id: str = ""
+    ) -> None:
         """主动发一条微信消息（仍由网关统一发送）。"""
 
         payload = {"type": "send", "text": text}
+        if request_id:
+            payload["request_id"] = request_id
         if dispatch_id:
             payload["dispatch_id"] = dispatch_id
         await self._send(payload)
@@ -197,6 +285,7 @@ class GatewayClient:
 
             self.connected = True
             self.pin = _pin_from(first.get("pin"))
+            self.context = GatewayContext.from_payload(first.get("context") or {})
             await _maybe_await(self.on_connected, self.pin)
 
             async for raw in socket:
@@ -214,6 +303,23 @@ class GatewayClient:
         kind = payload.get("type")
         if kind == "offer":
             await self._handle_offer(payload)
+        elif kind == "send_result":
+            await _maybe_await(
+                self.on_send_result, SendResult.from_payload(payload)
+            )
+        elif kind == "chat_changed":
+            info = ChatInfo.from_payload(payload)
+            if self.context is not None:
+                self.context = replace(
+                    self.context,
+                    chat_title=info.chat_title,
+                    chat_type=info.chat_type,
+                )
+            await _maybe_await(self.on_chat_changed, info)
+        elif kind == "upstream_state":
+            context = GatewayContext.from_payload(payload)
+            self.context = context
+            await _maybe_await(self.on_upstream_state, context)
         elif kind == "pin_expired":
             pin = _pin_from(payload)
             self.pin = None
