@@ -89,13 +89,58 @@ gui_exe = EXE(
 )
 
 
+gateway_datas = []
+gateway_binaries = []
+gateway_hiddenimports = ["handwechat.gateway.api"]
+for package_name in ("fastapi", "uvicorn", "websockets"):
+    datas, binaries, hiddenimports = collect_all(package_name)
+    gateway_datas.extend(datas)
+    gateway_binaries.extend(binaries)
+    gateway_hiddenimports.extend(hiddenimports)
+
+gateway_a = Analysis(
+    [str(ROOT / "scripts" / "run_gateway.py")],
+    pathex=[str(ROOT)],
+    binaries=gateway_binaries,
+    datas=gateway_datas,
+    hiddenimports=gateway_hiddenimports,
+    hookspath=[],
+    hooksconfig={},
+    runtime_hooks=[],
+    excludes=[],
+    noarchive=False,
+    optimize=0,
+)
+gateway_pyz = PYZ(gateway_a.pure)
+gateway_exe = EXE(
+    gateway_pyz,
+    gateway_a.scripts,
+    [],
+    exclude_binaries=True,
+    name="HandWeChatGateway",
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=True,
+    console=True,
+    disable_windowed_traceback=False,
+    argv_emulation=False,
+    target_arch=None,
+    codesign_identity=None,
+    entitlements_file=None,
+)
+
+
 coll = COLLECT(
     api_exe,
     gui_exe,
+    gateway_exe,
     api_a.binaries,
     api_a.datas,
     gui_a.binaries,
     gui_a.datas,
+    gateway_a.binaries,
+    gateway_a.datas,
     strip=False,
     upx=True,
     upx_exclude=[],

@@ -104,9 +104,34 @@ powershell -ExecutionPolicy Bypass -File packaging\build.ps1 -Target All -SkipDe
 ```text
 dist\HandWeChat\HandWeChatGui.exe
 dist\HandWeChat\HandWeChatApi.exe
+dist\HandWeChat\HandWeChatGateway.exe
 ```
 
-GUI 和 API 共用 `dist\HandWeChat\data\` 保存配置和日志，也共用同一个 `ocr_calibration.json`。离线 OCR 模型位于 `dist\HandWeChat\_internal\ocr_models\`，并会随程序一起打包。
+GUI、API 和网关共用 `dist\HandWeChat\data\` 保存配置和日志，也共用同一个 `ocr_calibration.json`；网关的配置是 `data\gateway_config.json`，首次运行前按《网关应用接入指南.md》登记消费应用。离线 OCR 模型位于 `dist\HandWeChat\_internal\ocr_models\`，并会随程序一起打包。
+
+## 发布应用 SDK
+
+构建消费应用使用的 Python SDK（wheel）：
+
+```bash
+powershell -ExecutionPolicy Bypass -File packaging\PublishSDK.ps1
+```
+
+指定版本号：
+
+```bash
+powershell -ExecutionPolicy Bypass -File packaging\PublishSDK.ps1 -Version 0.3.0
+```
+
+产物位于 `dist\sdk\handwechat_gateway_sdk-<version>-py3-none-any.whl`。默认版本号读取 `handwechat/__init__.py` 的 `__version__`。
+
+上传到 PyPI（需要先安装 `twine` 并配置好账号）：
+
+```bash
+powershell -ExecutionPolicy Bypass -File packaging\PublishSDK.ps1 -Upload -Repository pypi
+```
+
+脚本会把 `handwechat/gateway/client.py` 和 `protocol.py` 复制到临时构建目录，改写导入后打包，不修改仓库源码。
 
 ## 纯 OCR 通道
 

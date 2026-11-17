@@ -1,0 +1,328 @@
+# -*- coding: utf-8 -*-
+"""消费应用的 WebSocket 接入：hello、offer/decision、心跳与失效通知。"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import uuid
+
+from fastapi import WebSocket
+from starlette.websockets import WebSocketDisconnect
+
+from handwechat.gateway.config import GatewayConfig
+from handwechat.gateway.models import (
+    Decision,
+    IncomingMessage,
+    OfferTimeout,
+    OfferUnavailable,
+    PinState,
+    now_iso,
+)
+from handwechat.gateway.pin import PinManager
+from handwechat.gateway.registry import AppRegistry, AppRuntime
+
+logger = logging.getLogger("handwechat.gateway")
+
+_MAX_PENDING_EVENTS = 20
+
+
+class AppConnection:
+    def __init__(self, app_id: str, websocket: WebSocket) -> None:
+        self.app_id = app_id
+        self.websocket = websocket
+        self.closed = False
+        self.heartbeat_task: asyncio.Task | None = None
+        self._send_lock = asyncio.Lock()
+        self._pending: dict[str, asyncio.Future] = {}
+
+    async def send_json(self, payload: dict) -> None:
+        if self.closed:
+            raise ConnectionError("应用连接已关闭")
+        async with self._send_lock:
+            await self.websocket.send_json(payload)
+
+    def expect(self, offer_id: str) -> asyncio.Future:
+        future = asyncio.get_running_loop().create_future()
+        self._pending[offer_id] = future
+        return future
+
+    def resolve(self, offer_id: str, decision: Decision | None) -> None:
+        future = self._pending.pop(offer_id, None)
+        if future is not None and not future.done():
+            future.set_result(decision)
+
+    def drop(self, offer_id: str) -> None:
+        self._pending.pop(offer_id, None)
+
+    def fail_pending(self) -> None:
+        self.closed = True
+        pending = list(self._pending.values())
+        self._pending.clear()
+        for future in pending:
+            if not future.done():
+                future.set_result(None)
+
+    async def close(self, code: int = 1000, reason: str = "") -> None:
+        self.closed = True
+        try:
+            await self.websocket.close(code=code, reason=reason)
+        except Exception:
+            pass
+
+    def cancel_heartbeat(self) -> None:
+        if self.heartbeat_task is not None:
+            self.heartbeat_task.cancel()
+            self.heartbeat_task = None
+
+
+class AppHub:
+    def __init__(
+        self,
+        registry: AppRegistry,
+        pin_manager: PinManager,
+        *,
+        config: GatewayConfig,
+        send_text=None,
+    ) -> None:
+        self._registry = registry
+        self._pins = pin_manager
+        self._config = config
+        self._send_text = send_text
+        self._connections: dict[str, AppConnection] = {}
+        self._pending_events: dict[str, list[dict]] = {}
+
+    def set_sender(self, send_text) -> None:
+        self._send_text = send_text
+
+    def update_config(self, config: GatewayConfig) -> None:
+        self._config = config
+
+    def connected(self, app_id: str) -> bool:
+        return app_id in self._connections
+
+    async def handle(self, websocket: WebSocket) -> None:
+        await websocket.accept()
+        connection: AppConnection | None = None
+        try:
+            raw = await asyncio.wait_for(websocket.receive_text(), timeout=10.0)
+            try:
+                hello = json.loads(raw)
+            except json.JSONDecodeError:
+                await websocket.close(code=4400, reason="首帧不是合法 JSON")
+                return
+
+            app_id, code, reason = self._validate_hello(hello)
+            if app_id is None:
+                await websocket.close(code=code, reason=reason)
+                return
+
+            old = self._connections.pop(app_id, None)
+            if old is not None:
+                old.cancel_heartbeat()
+                old.fail_pending()
+                await old.close(code=4009, reason="连接已被新连接替换")
+
+            connection = AppConnection(app_id, websocket)
+            self._connections[app_id] = connection
+            runtime = self._registry.get(app_id)
+            if runtime is not None:
+                runtime.connection = connection
+
+            pin = self._pins.pin
+            await connection.send_json(
+                {
+                    "type": "welcome",
+                    "app_id": app_id,
+                    "heartbeat_seconds": self._config.heartbeat_seconds,
+                    "pin": pin.to_payload() if pin and pin.app_id == app_id else None,
+                }
+            )
+            await self._flush_pending_events(app_id, connection)
+
+            if self._config.heartbeat_seconds > 0:
+                connection.heartbeat_task = asyncio.create_task(
+                    self._heartbeat(connection)
+                )
+
+            await self._receive_loop(connection)
+        except (WebSocketDisconnect, asyncio.CancelledError):
+            pass
+        except Exception as exc:
+            logger.warning("应用 WS 连接异常：%s: %s", type(exc).__name__, exc)
+        finally:
+            if connection is not None:
+                connection.cancel_heartbeat()
+                connection.fail_pending()
+                if self._connections.get(connection.app_id) is connection:
+                    self._connections.pop(connection.app_id, None)
+                runtime = self._registry.get(connection.app_id)
+                if runtime is not None and runtime.connection is connection:
+                    runtime.connection = None
+
+    async def offer(
+        self,
+        app: AppRuntime,
+        message: IncomingMessage,
+        *,
+        pinned: bool,
+        pin: PinState | None,
+        timeout_s: float,
+    ) -> Decision:
+        connection = self._connections.get(app.id)
+        if connection is None:
+            raise OfferUnavailable(f"{app.id} 未连接")
+
+        offer_id = uuid.uuid4().hex
+        future = connection.expect(offer_id)
+        try:
+            await connection.send_json(
+                {
+                    "type": "offer",
+                    "offer_id": offer_id,
+                    "dispatch_id": message.dispatch_id,
+                    "pinned": pinned,
+                    "deadline_ms": int(round(timeout_s * 1000)),
+                    "pin": pin.to_payload() if pin is not None else None,
+                    "message": message.to_payload(),
+                }
+            )
+        except Exception as exc:
+            connection.drop(offer_id)
+            raise OfferUnavailable(f"{app.id} 推送失败：{exc}") from exc
+
+        try:
+            decision = await asyncio.wait_for(future, timeout=timeout_s)
+        except asyncio.TimeoutError:
+            raise OfferTimeout(f"{app.id} 超过 {int(timeout_s * 1000)}ms 未返回") from None
+        finally:
+            connection.drop(offer_id)
+
+        if decision is None:
+            raise OfferUnavailable(f"{app.id} 连接在等待中关闭")
+        return decision
+
+    async def send_pin_expired(self, pin: PinState) -> None:
+        payload = {"type": "pin_expired", **pin.to_payload()}
+        connection = self._connections.get(pin.app_id)
+        if connection is None:
+            self._queue_event(pin.app_id, payload)
+            return
+        try:
+            await connection.send_json(payload)
+        except Exception:
+            self._queue_event(pin.app_id, payload)
+
+    async def close(self, app_id: str) -> None:
+        connection = self._connections.pop(app_id, None)
+        if connection is None:
+            return
+        connection.cancel_heartbeat()
+        connection.fail_pending()
+        await connection.close(code=4001, reason="应用已从配置移除")
+        runtime = self._registry.get(app_id)
+        if runtime is not None and runtime.connection is connection:
+            runtime.connection = None
+
+    async def _receive_loop(self, connection: AppConnection) -> None:
+        while True:
+            raw = await connection.websocket.receive_text()
+            try:
+                payload = json.loads(raw)
+            except json.JSONDecodeError:
+                logger.warning("应用 %s 发送了非法 JSON 帧", connection.app_id)
+                continue
+            if not isinstance(payload, dict):
+                continue
+
+            kind = payload.get("type")
+            if kind == "decision":
+                offer_id = str(payload.get("offer_id") or "")
+                try:
+                    decision = Decision.parse(payload)
+                except ValueError as exc:
+                    logger.warning(
+                        "应用 %s 的 decision 非法，按 skip 处理：%s",
+                        connection.app_id,
+                        exc,
+                    )
+                    decision = Decision(action="skip")
+                connection.resolve(offer_id, decision)
+            elif kind == "send":
+                text = payload.get("text")
+                if isinstance(text, str) and text and self._send_text is not None:
+                    asyncio.create_task(
+                        self._send_from_app(
+                            connection.app_id,
+                            text,
+                            str(payload.get("dispatch_id") or ""),
+                        )
+                    )
+            elif kind in ("ping", "pong"):
+                continue
+            else:
+                logger.debug(
+                    "应用 %s 发送了未知帧类型：%r", connection.app_id, kind
+                )
+
+    async def _heartbeat(self, connection: AppConnection) -> None:
+        while not connection.closed:
+            interval = max(5.0, self._config.heartbeat_seconds)
+            await asyncio.sleep(interval)
+            if connection.closed:
+                return
+            try:
+                await connection.send_json({"type": "ping", "ts": now_iso()})
+            except Exception:
+                return
+
+    async def _send_from_app(
+        self, app_id: str, text: str, dispatch_id: str
+    ) -> None:
+        try:
+            await self._send_text(text, app_id=app_id, dispatch_id=dispatch_id)
+            logger.info(
+                json.dumps(
+                    {
+                        "event": "reply",
+                        "app_id": app_id,
+                        "dispatch_id": dispatch_id,
+                        "text": text[:200],
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+            )
+        except Exception as exc:
+            logger.warning("应用 %s 主动发送失败：%s", app_id, exc)
+
+    def _queue_event(self, app_id: str, payload: dict) -> None:
+        events = self._pending_events.setdefault(app_id, [])
+        events.append(payload)
+        if len(events) > _MAX_PENDING_EVENTS:
+            del events[: len(events) - _MAX_PENDING_EVENTS]
+
+    async def _flush_pending_events(
+        self, app_id: str, connection: AppConnection
+    ) -> None:
+        events = self._pending_events.pop(app_id, [])
+        for payload in events:
+            try:
+                await connection.send_json(payload)
+            except Exception:
+                self._queue_event(app_id, payload)
+                return
+
+    def _validate_hello(self, hello: dict) -> tuple[str | None, int, str]:
+        if not isinstance(hello, dict) or hello.get("type") != "hello":
+            return None, 4400, "首帧必须是 hello"
+        app_id = str(hello.get("app_id") or "").strip()
+        if not app_id:
+            return None, 4400, "hello 缺少 app_id"
+        app = self._registry.get(app_id)
+        if app is None or not app.config.enabled:
+            return None, 4404, "应用未注册或已禁用"
+        if app.config.token and str(hello.get("token") or "") != app.config.token:
+            return None, 4401, "token 不匹配"
+        return app_id, 0, ""

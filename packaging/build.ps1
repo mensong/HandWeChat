@@ -50,7 +50,7 @@ try {
         New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
         New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 
-        foreach ($fileName in @("api_config.json", "gui_config.json", "ocr_calibration.json")) {
+        foreach ($fileName in @("api_config.json", "gui_config.json", "gateway_config.json", "ocr_calibration.json")) {
             $source = Join-Path $root (Join-Path "data" $fileName)
             if (Test-Path -LiteralPath $source) {
                 Copy-Item -LiteralPath $source -Destination (
