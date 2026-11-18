@@ -50,13 +50,18 @@ try {
         New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
         New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 
-        foreach ($fileName in @("api_config.json", "gui_config.json", "gateway_config.json", "ocr_calibration.json")) {
+        foreach ($fileName in @("gateway_config.json", "ocr_calibration.json")) {
             $source = Join-Path $root (Join-Path "data" $fileName)
             if (Test-Path -LiteralPath $source) {
                 Copy-Item -LiteralPath $source -Destination (
                     Join-Path $dataDir $fileName
                 ) -Force
             }
+        }
+
+        & $Python (Join-Path $PSScriptRoot "gen_default_config.py") $dataDir
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to generate default API and GUI config files."
         }
     }
 }
