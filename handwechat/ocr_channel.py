@@ -462,7 +462,7 @@ class OcrChannel:
         on_send_started: Optional[SendStartedCallback] = None,
         on_send_completed: Optional[SendCompletedCallback] = None,
     ) -> None:
-        self.poll_interval = max(0.5, float(poll_interval))
+        self.poll_interval = max(0.2, float(poll_interval))
         self.max_send_per_minute = max(1, int(max_send_per_minute))
         self._history_size = max(1, int(history_size))
         self._history: deque[dict] = deque()

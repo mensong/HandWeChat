@@ -46,7 +46,7 @@ class ApiConfig:
             ),
             ocr_log_file=str(data.get("ocr_log_file") or "ocr.log"),
             ocr_poll_interval=max(
-                0.5, float(data.get("ocr_poll_interval") or 2.0)
+                0.2, float(data.get("ocr_poll_interval") or 2.0)
             ),
             ocr_max_send_per_minute=max(
                 1, int(data.get("ocr_max_send_per_minute") or 20)
