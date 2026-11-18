@@ -51,7 +51,7 @@ class FakeOffer:
         result = self.handler(app_runtime.id, msg, pinned)
         if isinstance(result, Exception):
             raise result
-        return result
+        return result, f"offer-{len(self.calls)}"
 
 
 def build(config: GatewayConfig, handler):
@@ -62,7 +62,7 @@ def build(config: GatewayConfig, handler):
     sent: list[tuple[str, str]] = []
     expired: list[PinState] = []
 
-    async def send_reply(text, *, app_id, dispatch_id=""):
+    async def send_reply(text, *, app_id, dispatch_id="", offer_id=""):
         sent.append((app_id, text))
 
     async def notify(pin):

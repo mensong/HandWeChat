@@ -26,7 +26,7 @@ logger = logging.getLogger("handwechat.gateway")
 
 _MAX_LOG_CONTENT = 200
 
-OfferFunc = Callable[..., Awaitable[Decision]]
+OfferFunc = Callable[..., Awaitable["tuple[Decision, str]"]]
 SendReplyFunc = Callable[..., Awaitable[object]]
 NotifyExpiredFunc = Callable[[PinState], Awaitable[None]]
 
@@ -116,7 +116,7 @@ class Dispatcher:
             outcome.tried.append(app.id)
 
             try:
-                decision = await self._offer(
+                decision, offer_id = await self._offer(
                     app,
                     message,
                     pinned=pinned,
@@ -151,7 +151,7 @@ class Dispatcher:
                 outcome.consumed_by = app.id
                 pin = self._apply_pin(app, decision)
                 if decision.reply:
-                    await self._send(app, decision.reply, message)
+                    await self._send(app, decision.reply, message, offer_id)
                 break
 
             app.skips += 1
@@ -276,19 +276,25 @@ class Dispatcher:
             logger.exception("pin_expired 通知失败")
 
     async def _send(
-        self, app: AppRuntime, text: str, message: IncomingMessage
+        self,
+        app: AppRuntime,
+        text: str,
+        message: IncomingMessage,
+        offer_id: str,
     ) -> None:
         try:
             await self._send_reply(
                 text,
                 app_id=app.id,
                 dispatch_id=message.dispatch_id,
+                offer_id=offer_id,
             )
             self.stats.sends += 1
             self._log(
                 "reply",
                 app_id=app.id,
                 dispatch_id=message.dispatch_id,
+                offer_id=offer_id,
                 text=text[:_MAX_LOG_CONTENT],
             )
         except Exception as exc:

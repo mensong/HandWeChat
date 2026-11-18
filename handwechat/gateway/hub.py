@@ -175,7 +175,7 @@ class AppHub:
         pinned: bool,
         pin: PinState | None,
         timeout_s: float,
-    ) -> Decision:
+    ) -> "tuple[Decision, str]":
         connection = self._connections.get(app.id)
         if connection is None:
             raise OfferUnavailable(f"{app.id} 未连接")
@@ -207,7 +207,7 @@ class AppHub:
 
         if decision is None:
             raise OfferUnavailable(f"{app.id} 连接在等待中关闭")
-        return decision
+        return decision, offer_id
 
     async def send_pin_expired(self, pin: PinState) -> None:
         payload = {"type": "pin_expired", **pin.to_payload()}

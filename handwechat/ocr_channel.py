@@ -667,6 +667,7 @@ class OcrChannel:
         with self._send_lock:
             rect = self._confirm_chat()
             self._click_input(rect)
+            self._assert_wechat_foreground()
             self._clear_input()
             self._set_clipboard_text(text)
             self._paste_clipboard()
@@ -1212,7 +1213,16 @@ class OcrChannel:
         hwnd, rect = located
         self._focus_window(hwnd)
         time.sleep(0.15)
+        self._assert_wechat_foreground()
         return rect
+
+    def _assert_wechat_foreground(self) -> None:
+        located = _find_wechat_window()
+        if located is None:
+            raise RuntimeError("未找到微信主窗口")
+        hwnd, _rect = located
+        if ctypes.windll.user32.GetForegroundWindow() != hwnd:
+            raise RuntimeError("微信窗口未能获得前台焦点，可能桌面正被占用")
 
     def _click_input(self, rect: tuple[int, int, int, int]) -> None:
         left, top, right, bottom = rect

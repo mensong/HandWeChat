@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import asdict
+from datetime import datetime
 import json
 import logging
 from pathlib import Path
@@ -196,6 +197,19 @@ def create_app(
     return app
 
 
+def _console_notice(message: str) -> None:
+    """热加载等运维事件直接打印到网关控制台窗口。"""
+
+    try:
+        print(f"[gateway {_clock()}] {message}", flush=True)
+    except Exception:
+        pass
+
+
+def _clock() -> str:
+    return datetime.now().strftime("%H:%M:%S")
+
+
 async def _watch_config(
     path: Path,
     registry: AppRegistry,
@@ -212,16 +226,19 @@ async def _watch_config(
         if mtime == last_mtime:
             continue
         last_mtime = mtime
+        previous_ids = {app.id for app in registry.all()}
         try:
             new_config = GatewayConfig.load(path)
         except Exception as exc:
+            detail = f"{type(exc).__name__}: {exc}"
             # 配置写坏时保留旧配置，避免半生效。
             logger.error(
                 json.dumps(
-                    {"event": "config_reload_failed", "error": f"{type(exc).__name__}: {exc}"},
+                    {"event": "config_reload_failed", "error": detail},
                     ensure_ascii=False,
                 )
             )
+            _console_notice(f"配置热加载失败，已保留旧配置：{detail}")
             continue
 
         new_config.log_dir = str(app_path(new_config.log_dir))
@@ -231,16 +248,32 @@ async def _watch_config(
         dispatcher.on_config_changed()
         for app_id in removed:
             await hub.close(app_id)
+
+        added = sorted({app.id for app in new_config.apps} - previous_ids)
+        order = " → ".join(
+            f"{app.id}({app.priority})"
+            for app in sorted(
+                new_config.apps, key=lambda item: (item.priority, item.id)
+            )
+        ) or "（无应用）"
         logger.info(
             json.dumps(
                 {
                     "event": "config_reloaded",
                     "apps": [app.id for app in new_config.apps],
+                    "added": added,
                     "removed": removed,
+                    "order": order,
                 },
                 ensure_ascii=False,
             )
         )
+        _console_notice(
+            f"配置已热加载：{len(new_config.apps)} 个应用"
+            f"（新增 {len(added)}，移除 {len(removed)}）；顺序：{order}"
+        )
+        if removed:
+            _console_notice(f"已断开移除的应用：{', '.join(removed)}")
 
 
 def _mtime(path: Path) -> float:
