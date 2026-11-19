@@ -1029,10 +1029,23 @@ class OcrChannel:
 
     def _consume_frame(self, frame: ParsedFrame) -> None:
         started_at = time.perf_counter()
-        last: Optional[OcrMessage] = frame.messages[-1] if frame.messages else None
-        decision = "empty" if last is None else "skip"
+        # Replies sent from this WeChat account (bot output included) render on
+        # the right side, so they must never be treated as incoming messages.
+        messages = tuple(
+            message
+            for message in frame.messages
+            if message.attr != MessageAttr.SELF
+        )
+        last: Optional[OcrMessage] = messages[-1] if messages else None
+        if last is None:
+            decision = "empty"
+            match_state = "self_only" if frame.messages else "empty"
+        else:
+            decision = "skip"
+            match_state = "skip"
+        new_count = 0
         confidence = 0.0
-        emitted: Optional[tuple[int, OcrMessage]] = None
+        emitted: list[tuple[int, OcrMessage, float, int, bool]] = []
 
         with self._status_lock:
             previous_title = self._chat_title
@@ -1053,57 +1066,72 @@ class OcrChannel:
                 self._history.clear()
 
             if last is not None:
-                signature = _message_signature(last)
                 if not self._baseline_ready:
                     # First frame after start or a chat switch is the baseline.
                     self._baseline_ready = True
-                    self._last_signature = signature
+                    self._last_signature = _message_signature(last)
                     decision = "first"
+                    match_state = "baseline"
                     self._state.updated_at = _now_text()
                     self._save_state_locked()
-                elif signature != self._last_signature:
-                    repeats = (
-                        sum(
-                            1
-                            for entry in self._history
-                            if entry["signature"] == signature
+                else:
+                    # Everything after the last emitted message is new, even
+                    # when several messages landed between two captures.
+                    pending, match_state = self._select_pending(messages)
+                    new_count = len(pending)
+                    for position, message in enumerate(pending):
+                        signature = _message_signature(message)
+                        repeats = (
+                            sum(
+                                1
+                                for entry in self._history
+                                if entry["signature"] == signature
+                            )
+                            + 1
                         )
-                        + 1
-                    )
-                    confidence = _confidence_for(repeats)
-                    self._state.last_seq += 1
-                    base = TextMessage(
-                        sender=last.sender,
-                        content=last.text,
-                        attr=last.attr,
-                        type=MessageType.TEXT,
-                        index=self._state.last_seq,
-                        is_latest=True,
-                        confidence=confidence,
-                    )
-                    base.extra["listen_time"] = _now_text()
-                    self._history.append(
-                        {
-                            "signature": signature,
-                            "attr": last.attr,
-                            "sender": last.sender,
-                            "text": last.text,
-                            "confidence": confidence,
-                        }
-                    )
-                    while len(self._history) > self._history_size:
-                        self._history.popleft()
-                    self._last_signature = signature
-                    self._state.updated_at = _now_text()
-                    self._save_state_locked()
-                    decision = "emit"
-                    emitted = (self._state.last_seq, last)
-                    self._emit_message(base)
+                        confidence = _confidence_for(repeats)
+                        self._state.last_seq += 1
+                        is_latest = position == len(pending) - 1
+                        base = TextMessage(
+                            sender=message.sender,
+                            content=message.text,
+                            attr=message.attr,
+                            type=MessageType.TEXT,
+                            index=self._state.last_seq,
+                            is_latest=is_latest,
+                            confidence=confidence,
+                        )
+                        base.extra["listen_time"] = _now_text()
+                        self._history.append(
+                            {
+                                "signature": signature,
+                                "attr": message.attr,
+                                "sender": message.sender,
+                                "text": message.text,
+                                "confidence": confidence,
+                            }
+                        )
+                        while len(self._history) > self._history_size:
+                            self._history.popleft()
+                        emitted.append(
+                            (
+                                self._state.last_seq,
+                                message,
+                                confidence,
+                                repeats,
+                                is_latest,
+                            )
+                        )
+                        self._emit_message(base)
+                    if pending:
+                        self._last_signature = _message_signature(pending[-1])
+                        self._state.updated_at = _now_text()
+                        self._save_state_locked()
+                        decision = "emit"
 
             history_count = len(self._history)
 
-        if emitted is not None:
-            seq, message = emitted
+        for seq, message, message_confidence, repeats, is_latest in emitted:
             logger.info(
                 _log_record(
                     event="emit",
@@ -1111,9 +1139,9 @@ class OcrChannel:
                     attr=message.attr,
                     sender=message.sender,
                     text=message.text,
-                    confidence=confidence,
+                    confidence=message_confidence,
                     repeats=repeats,
-                    is_latest=True,
+                    is_latest=is_latest,
                 )
             )
         self._log_frame(
@@ -1122,7 +1150,31 @@ class OcrChannel:
             confidence=confidence,
             history_count=history_count,
             elapsed_ms=(time.perf_counter() - started_at) * 1000,
+            match_state=match_state,
+            new_count=new_count,
+            friend_count=len(messages),
         )
+
+    def _select_pending(
+        self, messages: Sequence[OcrMessage]
+    ) -> tuple[tuple[OcrMessage, ...], str]:
+        """Return the messages that follow the last one already emitted."""
+
+        match_state = "miss"
+        match_index = -1
+        for index in range(len(messages) - 1, -1, -1):
+            if _message_signature(messages[index]) == self._last_signature:
+                match_index = index
+                match_state = "found"
+                break
+        if match_index >= 0:
+            pending = tuple(messages[match_index + 1 :])
+            if not pending:
+                return (), "same"
+            return pending, match_state
+        # The previous message scrolled out of view or was misread; fall back to
+        # the single latest message, which is what earlier versions did.
+        return (messages[-1],), match_state
 
     def _log_frame(
         self,
@@ -1132,6 +1184,9 @@ class OcrChannel:
         confidence: float,
         history_count: int,
         elapsed_ms: float,
+        match_state: str,
+        new_count: int,
+        friend_count: int,
     ) -> None:
         if not logger.isEnabledFor(logging.INFO):
             return
@@ -1148,6 +1203,9 @@ class OcrChannel:
                 else ""
             ),
             "decision": decision,
+            "match": match_state,
+            "new_count": new_count,
+            "friends": friend_count,
             "history_size": history_count,
             "ocr_ms": round(frame.ocr_ms, 1),
             "elapsed_ms": round(elapsed_ms, 1),

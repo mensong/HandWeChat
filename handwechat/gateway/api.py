@@ -44,6 +44,7 @@ def create_app(
 
     config.log_dir = str(app_path(config.log_dir))
     configure_gateway_logging(config)
+    _warn_duplicate_priorities(config)
 
     registry = AppRegistry(config)
     pins = PinManager()
@@ -197,6 +198,22 @@ def create_app(
     return app
 
 
+def _warn_duplicate_priorities(config: GatewayConfig) -> None:
+    """重复优先级不阻断配置，记录告警，同值按 apps 数组顺序询问。"""
+
+    for priority, ids in config.duplicate_priorities().items():
+        logger.warning(
+            json.dumps(
+                {
+                    "event": "duplicate_priority",
+                    "priority": priority,
+                    "apps": ids,
+                },
+                ensure_ascii=False,
+            )
+        )
+
+
 def _console_notice(message: str) -> None:
     """热加载等运维事件直接打印到网关控制台窗口。"""
 
@@ -242,6 +259,7 @@ async def _watch_config(
             continue
 
         new_config.log_dir = str(app_path(new_config.log_dir))
+        _warn_duplicate_priorities(new_config)
         removed = registry.reload(new_config)
         hub.update_config(new_config)
         upstream.update_config(new_config)
@@ -252,8 +270,9 @@ async def _watch_config(
         added = sorted({app.id for app in new_config.apps} - previous_ids)
         order = " → ".join(
             f"{app.id}({app.priority})"
-            for app in sorted(
-                new_config.apps, key=lambda item: (item.priority, item.id)
+            for _, app in sorted(
+                enumerate(new_config.apps),
+                key=lambda item: (item[1].priority, item[0]),
             )
         ) or "（无应用）"
         logger.info(

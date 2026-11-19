@@ -198,12 +198,18 @@ async def scenario_app_ends_pin() -> None:
 
 
 def scenario_config_validation() -> None:
-    try:
-        GatewayConfig(apps=[app("a", 10), app("b", 10)]).validate()
-    except ValueError:
-        pass
-    else:
-        raise AssertionError("重复优先级应当报错")
+    config = GatewayConfig(
+        apps=[app("a", 10), app("b", 10), app("c", 5), app("d", 10)]
+    )
+    config.validate()
+    registry = AppRegistry(config)
+    assert [item.id for item in registry.enabled()] == ["c", "a", "b", "d"]
+    registry.reload(
+        GatewayConfig(
+            apps=[app("d", 10), app("c", 5), app("a", 10), app("b", 10)]
+        )
+    )
+    assert [item.id for item in registry.enabled()] == ["c", "d", "a", "b"]
 
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "gateway_config.json"
@@ -219,7 +225,7 @@ def scenario_config_validation() -> None:
         loaded = GatewayConfig.load(path)
         assert loaded.apps[0].id == "a"
         assert loaded.apps[0].hold_seconds == 30
-    print("PASS 配置校验与加载")
+    print("PASS 配置校验、同优先级按数组顺序与加载")
 
 
 async def main() -> None:

@@ -12,6 +12,7 @@ from handwechat.gateway.config import GatewayAppConfig, GatewayConfig
 @dataclass
 class AppRuntime:
     config: GatewayAppConfig
+    order: int = 0
     connection: object | None = None
     failures: int = 0
     open_until: float = 0.0
@@ -66,14 +67,15 @@ class AppRegistry:
         config.validate()
         self.config = config
         self._apps: dict[str, AppRuntime] = {
-            app.id: AppRuntime(config=app) for app in config.apps
+            app.id: AppRuntime(config=app, order=order)
+            for order, app in enumerate(config.apps)
         }
 
     def get(self, app_id: str) -> AppRuntime | None:
         return self._apps.get(app_id)
 
     def all(self) -> list[AppRuntime]:
-        return sorted(self._apps.values(), key=lambda app: (app.priority, app.id))
+        return sorted(self._apps.values(), key=lambda app: (app.priority, app.order))
 
     def enabled(self) -> list[AppRuntime]:
         return [app for app in self.all() if app.config.enabled]
@@ -84,12 +86,13 @@ class AppRegistry:
         config.validate()
         previous = self._apps
         apps: dict[str, AppRuntime] = {}
-        for app_config in config.apps:
+        for order, app_config in enumerate(config.apps):
             runtime = previous.get(app_config.id)
             if runtime is None:
-                runtime = AppRuntime(config=app_config)
+                runtime = AppRuntime(config=app_config, order=order)
             else:
                 runtime.config = app_config
+                runtime.order = order
             apps[app_config.id] = runtime
 
         removed = [app_id for app_id in previous if app_id not in apps]

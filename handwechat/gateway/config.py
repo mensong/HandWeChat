@@ -111,21 +111,25 @@ class GatewayConfig:
         return config
 
     def validate(self) -> None:
-        """注册的应用 id 与优先级都必须唯一，否则顺序不确定。"""
+        """应用 id 必须唯一；priority 允许重复，重复时按 apps 数组顺序询问。"""
 
         seen_ids: set[str] = set()
-        seen_priorities: dict[int, str] = {}
         for app in self.apps:
             if not app.id:
                 raise ValueError("应用 id 不能为空")
             if app.id in seen_ids:
                 raise ValueError(f"应用 id 重复：{app.id}")
             seen_ids.add(app.id)
-            if app.priority in seen_priorities:
-                raise ValueError(
-                    f"应用优先级重复：{app.priority}（{seen_priorities[app.priority]} 与 {app.id}）"
-                )
-            seen_priorities[app.priority] = app.id
+
+    def duplicate_priorities(self) -> dict[int, list[str]]:
+        """按配置顺序返回重复出现的 priority 及其应用 id。"""
+
+        groups: dict[int, list[str]] = {}
+        for app in self.apps:
+            groups.setdefault(app.priority, []).append(app.id)
+        return {
+            priority: ids for priority, ids in groups.items() if len(ids) > 1
+        }
 
     def to_dict(self) -> dict:
         return asdict(self)
