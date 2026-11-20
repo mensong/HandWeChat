@@ -59,6 +59,10 @@ class MainWindow(QMainWindow):
 
         self._build_ui()
         self._log("界面已启动，正在确认微信窗口")
+        self._log(
+            "提示：请将微信 设置→快捷键→发送消息 设为 Ctrl+Enter，"
+            "消息中的 [@群昵称] 会自动转换为 @ 提及"
+        )
         self.attach()
 
     # -- UI 构建 -----------------------------------------------------------
@@ -103,7 +107,11 @@ class MainWindow(QMainWindow):
 
         bottom = QHBoxLayout()
         self.input_edit = QLineEdit(page)
-        self.input_edit.setPlaceholderText("输入要发送到当前聊天的纯文本消息")
+        self.input_edit.setPlaceholderText("输入消息，支持 [@群昵称]")
+        self.input_edit.setToolTip(
+            "消息中的 [@群昵称] 会转换为微信 @ 提及；"
+            "请先将微信 设置→快捷键→发送消息 设为 Ctrl+Enter"
+        )
         self.input_edit.returnPressed.connect(self._send_current)
         self.send_button = QPushButton("发送")
         self.send_button.clicked.connect(self._send_current)
@@ -116,6 +124,12 @@ class MainWindow(QMainWindow):
             bottom.addWidget(widget)
         bottom.setStretch(1, 1)
         layout.addLayout(bottom)
+        self.mention_hint_label = QLabel(
+            "提示：请将微信 设置→快捷键→发送消息 设为 Ctrl+Enter；"
+            "消息中的 [@群昵称] 会自动转换为 @ 提及"
+        )
+        self.mention_hint_label.setWordWrap(True)
+        layout.addWidget(self.mention_hint_label)
         return page
 
     def _build_listener_page(self) -> QWidget:

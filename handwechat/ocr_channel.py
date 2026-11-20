@@ -22,6 +22,7 @@ import numpy as np
 from PIL import Image, ImageGrab
 
 from handwechat.errors import HWError
+from handwechat.mentions import split_mentions
 from handwechat.models import BaseMessage, MessageAttr, MessageType, TextMessage
 from handwechat.ocr_win import _offline_model_args
 from handwechat.paths import ocr_models_dir
@@ -35,6 +36,10 @@ ChatChangedCallback = Callable[[str], None]
 ErrorCallback = Callable[[str, Exception], None]
 
 logger = logging.getLogger("handwechat.ocr")
+
+_MENTION_PICKER_DELAY = 0.3
+_MENTION_FILTER_DELAY = 0.5
+_MENTION_SELECT_DELAY = 0.2
 
 
 def configure_ocr_logging(log_path: str | Path) -> None:
@@ -660,19 +665,23 @@ class OcrChannel:
         self.send_queue.submit(text, task_id=task_id)
 
     def send_text(self, text: str) -> bool:
-        """Paste text into the active chat and press Enter."""
+        """Type text into the active chat and send it with Ctrl+Enter."""
 
         if not text:
             raise ValueError("发送内容不能为空")
+        segments = split_mentions(text)
         with self._send_lock:
             rect = self._confirm_chat()
             self._click_input(rect)
             self._assert_wechat_foreground()
             self._clear_input()
-            self._set_clipboard_text(text)
-            self._paste_clipboard()
+            for kind, value in segments:
+                if kind == "mention":
+                    self._type_mention(value)
+                else:
+                    self._paste_text(value)
             time.sleep(0.15)
-            self._press_enter()
+            self._press_send_shortcut()
             return True
 
     def _capture_loop(self) -> None:
@@ -1296,6 +1305,28 @@ class OcrChannel:
 
     def _paste_clipboard(self) -> None:
         self._press_combo(0x11, 0x56)  # Ctrl+V
+
+    def _paste_text(self, text: str) -> None:
+        self._set_clipboard_text(text)
+        self._paste_clipboard()
+        time.sleep(0.1)
+
+    def _type_mention(self, name: str) -> None:
+        """Trigger the mention picker, filter it by name and select the match."""
+
+        self._type_at_sign()
+        time.sleep(_MENTION_PICKER_DELAY)
+        self._set_clipboard_text(name)
+        self._paste_clipboard()
+        time.sleep(_MENTION_FILTER_DELAY)
+        self._press_enter()
+        time.sleep(_MENTION_SELECT_DELAY)
+
+    def _type_at_sign(self) -> None:
+        self._press_combo(0x10, 0x32)  # Shift+2
+
+    def _press_send_shortcut(self) -> None:
+        self._press_combo(0x11, 0x0D)  # Ctrl+Enter
 
     def _press_enter(self) -> None:
         self._tap(0x0D)  # Enter
