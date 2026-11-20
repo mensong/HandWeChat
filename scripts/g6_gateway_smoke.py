@@ -217,7 +217,14 @@ def scenario_config_validation() -> None:
             json.dumps(
                 {
                     "listen_port": 8100,
-                    "apps": [{"id": "a", "priority": 10, "hold_seconds": 30}],
+                    "apps": [
+                        {
+                            "id": "a",
+                            "priority": 10,
+                            "hold_seconds": 30,
+                            "groups": ["公司群", "公司群", "测试群"],
+                        }
+                    ],
                 }
             ),
             encoding="utf-8",
@@ -225,6 +232,7 @@ def scenario_config_validation() -> None:
         loaded = GatewayConfig.load(path)
         assert loaded.apps[0].id == "a"
         assert loaded.apps[0].hold_seconds == 30
+        assert loaded.apps[0].groups == ["公司群", "测试群"], loaded.apps[0].groups
     print("PASS 配置校验、同优先级按数组顺序与加载")
 
 

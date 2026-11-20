@@ -20,9 +20,11 @@ from handwechat.gateway.logging_setup import configure_gateway_logging
 from handwechat.gateway.models import now_iso
 from handwechat.gateway.pin import PinManager
 from handwechat.gateway.registry import AppRegistry
+from handwechat.gateway.rules import summarize as summarize_rules
 from handwechat.gateway.sends import SendCoordinator
 from handwechat.gateway.upstream import UpstreamClient
 from handwechat.paths import app_data_path, app_path
+from handwechat.version import __version__
 
 logger = logging.getLogger("handwechat.gateway")
 
@@ -69,6 +71,7 @@ def create_app(
         notify_pin_expired=hub.send_pin_expired,
         stats=stats,
         queue=queue,
+        context_provider=upstream.context,
     )
 
     @asynccontextmanager
@@ -133,7 +136,7 @@ def create_app(
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
 
-    app = FastAPI(title="HandWeChat Gateway", version="0.1.0")
+    app = FastAPI(title="HandWeChat Gateway", version=__version__)
     app.router.lifespan_context = lifespan
 
     @app.get("/api/v1/gateway/health")
@@ -163,6 +166,8 @@ def create_app(
                     "name": runtime.name,
                     "priority": runtime.priority,
                     "enabled": runtime.config.enabled,
+                    "groups": list(runtime.config.groups),
+                    "rules": summarize_rules(runtime.rules),
                     "connected": runtime.connected,
                     "circuit_open": runtime.circuit_open(),
                     "timeout_ms": runtime.config.timeout_ms,

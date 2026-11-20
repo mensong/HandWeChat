@@ -179,6 +179,7 @@ class GatewayClient:
         *,
         token: str = "",
         url: str = DEFAULT_URL,
+        rules: Optional[list[dict]] = None,
         on_offer: Optional[OfferHandler] = None,
         on_pin_expired: Optional[PinHandler] = None,
         on_connected: Optional[ConnectHandler] = None,
@@ -192,6 +193,7 @@ class GatewayClient:
         self.app_id = app_id
         self.token = token
         self.url = url
+        self.rules = rules
         self.on_offer = on_offer
         self.on_pin_expired = on_pin_expired
         self.on_connected = on_connected
@@ -267,12 +269,14 @@ class GatewayClient:
             open_timeout=self.handshake_timeout,
         ) as socket:
             self._socket = socket
-            await socket.send(
-                json.dumps(
-                    {"type": "hello", "app_id": self.app_id, "token": self.token},
-                    ensure_ascii=False,
-                )
-            )
+            hello = {
+                "type": "hello",
+                "app_id": self.app_id,
+                "token": self.token,
+            }
+            if self.rules is not None:
+                hello["rules"] = self.rules
+            await socket.send(json.dumps(hello, ensure_ascii=False))
             raw = await asyncio.wait_for(
                 socket.recv(), timeout=self.handshake_timeout
             )

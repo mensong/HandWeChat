@@ -21,6 +21,7 @@ from handwechat.gateway.models import (
 )
 from handwechat.gateway.pin import PinManager
 from handwechat.gateway.registry import AppRegistry, AppRuntime
+from handwechat.gateway.rules import matches as rules_match
 
 logger = logging.getLogger("handwechat.gateway")
 
@@ -59,6 +60,7 @@ class Dispatcher:
         stats: GatewayStats | None = None,
         queue: asyncio.Queue | None = None,
         now: Callable[[], float] = time.monotonic,
+        context_provider: Callable[[], dict] | None = None,
     ) -> None:
         self.registry = registry
         self.pin_manager = pin_manager
@@ -70,6 +72,7 @@ class Dispatcher:
         self._send_reply = send_reply
         self._notify_pin_expired = notify_pin_expired
         self._now = now
+        self._context_provider = context_provider
         self._pin_token = 0
         self._pin_task: asyncio.Task | None = None
 
@@ -96,15 +99,29 @@ class Dispatcher:
         if expired is not None:
             await self._notify_expired(expired)
 
-        candidates = self._candidates(started)
+        context = self._context()
+        chat_title = str(context.get("chat_title") or "")
+        chat_type = context.get("chat_type")
+        chat_type = str(chat_type) if chat_type else None
+
+        active_pin = self._active_pin(started, chat_title)
+        candidates = self._candidates(
+            started, message, chat_title, chat_type, active_pin
+        )
         if not candidates:
             self.stats.unconsumed += 1
             outcome.elapsed_ms = (self._now() - started) * 1000.0
-            self._log_dispatch(message, outcome, reason="no_app")
+            self._log_dispatch(
+                message,
+                outcome,
+                reason="no_app",
+                candidates=[],
+                chat=chat_title,
+            )
             return outcome
 
         for app in candidates:
-            pin = self.pin_manager.pin
+            pin = active_pin
             remaining = deadline - self._now()
             if remaining <= 0.001:
                 self.stats.deadline_exceeded += 1
@@ -149,7 +166,7 @@ class Dispatcher:
                 app.consumes += 1
                 self.stats.consumed += 1
                 outcome.consumed_by = app.id
-                pin = self._apply_pin(app, decision)
+                pin = self._apply_pin(app, decision, chat_title)
                 if decision.reply:
                     await self._send(app, decision.reply, message, offer_id)
                 break
@@ -159,7 +176,13 @@ class Dispatcher:
             self.stats.unconsumed += 1
 
         outcome.elapsed_ms = (self._now() - started) * 1000.0
-        self._log_dispatch(message, outcome, reason="")
+        self._log_dispatch(
+            message,
+            outcome,
+            reason="",
+            candidates=[app.id for app in candidates],
+            chat=chat_title,
+        )
         return outcome
 
     def on_config_changed(self) -> None:
@@ -183,24 +206,74 @@ class Dispatcher:
             self._pin_task.cancel()
             self._pin_task = None
 
-    def _candidates(self, now: float) -> list[AppRuntime]:
-        enabled = [
-            app
-            for app in self.registry.enabled()
-            if app.connected and not app.circuit_open(now)
-        ]
-        pin = self.pin_manager.pin
-        if pin is not None:
-            pinned = next((app for app in enabled if app.id == pin.app_id), None)
-            if pinned is not None:
-                return [pinned] + [app for app in enabled if app.id != pinned.id]
+    def _candidates(
+        self,
+        now: float,
+        message: IncomingMessage,
+        chat_title: str,
+        chat_type: str | None,
+        active_pin: PinState | None,
+    ) -> list[AppRuntime]:
+        enabled = sorted(
+            (
+                app
+                for app in self.registry.enabled()
+                if app.connected
+                and not app.circuit_open(now)
+                and self._group_eligible(app, chat_title)
+                and rules_match(app.rules, message, chat_type)
+            ),
+            key=lambda app: (app.priority, app.order),
+        )
+        pinned = (
+            self.registry.get(active_pin.app_id)
+            if active_pin is not None
+            else None
+        )
+        if pinned is not None:
+            return [pinned] + [app for app in enabled if app.id != pinned.id]
         return enabled
+
+    @staticmethod
+    def _group_eligible(app: AppRuntime, chat_title: str) -> bool:
+        groups = app.config.groups
+        if not groups:
+            return True
+        return bool(chat_title) and chat_title in groups
+
+    def _active_pin(
+        self, now: float, chat_title: str
+    ) -> PinState | None:
+        """置顶只提升顺序，不改变在线、组和熔断资格，但绕过规则匹配。"""
+
+        pin = self.pin_manager.pin
+        if pin is None:
+            return None
+        app = self.registry.get(pin.app_id)
+        if (
+            app is None
+            or not app.config.enabled
+            or not app.connected
+            or app.circuit_open(now)
+            or not self._group_eligible(app, chat_title)
+            or not self._pin_chat_eligible(pin, chat_title)
+        ):
+            return None
+        return pin
+
+    @staticmethod
+    def _pin_chat_eligible(pin: PinState, chat_title: str) -> bool:
+        if not pin.chat_title or not chat_title:
+            return True
+        return pin.chat_title == chat_title
 
     def _timeout_seconds(self, app: AppRuntime) -> float:
         timeout_ms = app.config.timeout_ms or self.registry.config.default_offer_timeout_ms
         return max(0.05, timeout_ms / 1000.0)
 
-    def _apply_pin(self, app: AppRuntime, decision: Decision) -> PinState | None:
+    def _apply_pin(
+        self, app: AppRuntime, decision: Decision, chat_title: str
+    ) -> PinState | None:
         config = self.registry.config
         if decision.pin is True:
             hold = (
@@ -213,6 +286,7 @@ class Dispatcher:
                 decision.state,
                 hold,
                 max_hold_seconds=config.max_hold_seconds,
+                chat_title=chat_title,
             )
             self._schedule_pin_timer()
             if pin is not None:
@@ -303,7 +377,13 @@ class Dispatcher:
             logger.warning("应用 %s 的回复发送失败：%s", app.id, exc)
 
     def _log_dispatch(
-        self, message: IncomingMessage, outcome: DispatchOutcome, *, reason: str
+        self,
+        message: IncomingMessage,
+        outcome: DispatchOutcome,
+        *,
+        reason: str,
+        candidates: list[str],
+        chat: str,
     ) -> None:
         fields = {
             "event": "dispatch",
@@ -311,6 +391,8 @@ class Dispatcher:
             "message_id": message.id,
             "sender": message.sender,
             "content": message.content[:_MAX_LOG_CONTENT],
+            "chat": chat,
+            "candidates": candidates,
             "consumed_by": outcome.consumed_by,
             "tried": outcome.tried,
             "timed_out": outcome.timed_out,
@@ -319,6 +401,15 @@ class Dispatcher:
         if reason:
             fields["reason"] = reason
         self._log_fields(fields)
+
+    def _context(self) -> dict:
+        if self._context_provider is None:
+            return {}
+        try:
+            return self._context_provider() or {}
+        except Exception:
+            logger.debug("读取上游上下文失败", exc_info=True)
+            return {}
 
     def _log(self, event: str, **fields) -> None:
         self._log_fields({"event": event, **fields})

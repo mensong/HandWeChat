@@ -22,6 +22,7 @@ from handwechat.gateway.models import (
 )
 from handwechat.gateway.pin import PinManager
 from handwechat.gateway.registry import AppRegistry, AppRuntime
+from handwechat.gateway.rules import RuleError, parse_hello_rules
 
 logger = logging.getLogger("handwechat.gateway")
 
@@ -123,6 +124,13 @@ class AppHub:
                 await websocket.close(code=code, reason=reason)
                 return
 
+            try:
+                rules = parse_hello_rules(hello)
+            except RuleError as exc:
+                logger.warning("应用 %s 上报的 rules 非法：%s", app_id, exc)
+                await websocket.close(code=4400, reason="rules 非法")
+                return
+
             old = self._connections.pop(app_id, None)
             if old is not None:
                 old.cancel_heartbeat()
@@ -133,6 +141,7 @@ class AppHub:
             self._connections[app_id] = connection
             runtime = self._registry.get(app_id)
             if runtime is not None:
+                runtime.rules = rules
                 runtime.connection = connection
 
             pin = self._pins.pin

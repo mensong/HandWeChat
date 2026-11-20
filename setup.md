@@ -123,7 +123,7 @@ powershell -ExecutionPolicy Bypass -File packaging\PublishSDK.ps1
 powershell -ExecutionPolicy Bypass -File packaging\PublishSDK.ps1 -Version 0.3.0
 ```
 
-产物位于 `dist\sdk\handwechat_gateway_sdk-<version>-py3-none-any.whl`。默认版本号读取 `handwechat/__init__.py` 的 `__version__`。
+产物位于 `dist\sdk\handwechat_gateway_sdk-<version>-py3-none-any.whl`。默认版本号读取 `handwechat/version.py` 的 `__version__`，按本地日期生成，格式 `yyyy.MM.dd`（同一天多次打包会覆盖同名产物）。
 
 上传到 PyPI（需要先安装 `twine` 并配置好账号）：
 

@@ -23,6 +23,7 @@ class PinManager:
         hold_seconds: float,
         *,
         max_hold_seconds: float,
+        chat_title: str = "",
         now: float | None = None,
     ) -> PinState | None:
         """置顶或续期；hold_seconds 为 0 时取消该应用自己的置顶。"""
@@ -36,6 +37,7 @@ class PinManager:
             state=state,
             hold_seconds=hold,
             expires_mono=now + hold,
+            chat_title=chat_title,
         )
         return self._pin
 

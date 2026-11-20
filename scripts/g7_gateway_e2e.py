@@ -182,6 +182,7 @@ async def wait_sent(upstream: FakeUpstream, expected: list[str]) -> None:
 async def consumer(
     app_id: str,
     port: int,
+    rules,
     decide,
     observed: list,
     clients: dict,
@@ -212,6 +213,7 @@ async def consumer(
         app_id=app_id,
         token="t",
         url=f"ws://127.0.0.1:{port}/api/v1/gateway/ws/app",
+        rules=rules,
         on_offer=on_offer,
         on_connected=on_connected,
         on_send_result=send_results.append,
@@ -301,11 +303,17 @@ async def main() -> None:
                 return {"action": "skip"}
 
             clients: dict[str, GatewayClient] = {}
+            rules = {
+                "checkin": [{"keywords": ["42"]}],
+                "game": [{"keywords": ["开始数字游戏"]}],
+                "bot": [],
+            }
             consumers = [
                 asyncio.create_task(
                     consumer(
                         "checkin",
                         gateway_port,
+                        rules["checkin"],
                         decide,
                         observed,
                         clients,
@@ -319,6 +327,7 @@ async def main() -> None:
                     consumer(
                         "game",
                         gateway_port,
+                        rules["game"],
                         decide,
                         observed,
                         clients,
@@ -332,6 +341,7 @@ async def main() -> None:
                     consumer(
                         "bot",
                         gateway_port,
+                        rules["bot"],
                         decide,
                         observed,
                         clients,
@@ -450,6 +460,8 @@ async def main() -> None:
                 f"http://127.0.0.1:{gateway_port}/api/v1/gateway/status",
             )
             assert status["pin"]["app_id"] == "game", status["pin"]
+            assert status["pin"]["chat_title"] == "群聊A", status["pin"]
+            assert status["apps"][0]["rules"]["mode"] == "rules", status["apps"]
             assert status["stats"]["dispatched"] == 3, status["stats"]
             assert status["stats"]["consumed"] == 3, status["stats"]
             assert status["context"]["chat_title"] == "群聊B", status["context"]

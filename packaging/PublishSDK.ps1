@@ -30,15 +30,20 @@ if ([string]::IsNullOrWhiteSpace($OutputDir)) {
 }
 
 if ([string]::IsNullOrWhiteSpace($Version)) {
-    $initPath = Join-Path $root "handwechat\__init__.py"
-    $match = [regex]::Match(
-        [IO.File]::ReadAllText($initPath),
-        '__version__\s*=\s*"([^"]+)"'
-    )
-    if (-not $match.Success) {
-        throw "Unable to read __version__ from handwechat/__init__.py"
+    $versionPath = Join-Path $root "handwechat\version.py"
+    $Version = ""
+    try {
+        $output = & $Python -c "import importlib.util,sys;s=importlib.util.spec_from_file_location('_handwechat_version',sys.argv[1]);m=importlib.util.module_from_spec(s);s.loader.exec_module(m);sys.stdout.write(m.__version__)" $versionPath
+        if ($LASTEXITCODE -eq 0) {
+            $Version = ([string]$output).Trim()
+        }
     }
-    $Version = $match.Groups[1].Value
+    catch {
+        $Version = ""
+    }
+    if ([string]::IsNullOrWhiteSpace($Version)) {
+        $Version = Get-Date -Format "yyyy.MM.dd"
+    }
 }
 
 Write-Host "Building $distributionName $Version"
@@ -131,12 +136,28 @@ Consumer SDK for the HandWeChat message gateway.
 
 
     async def main() -> None:
-        client = GatewayClient(app_id="my-app", token="***", on_offer=on_offer)
+        client = GatewayClient(
+            app_id="my-app",
+            token="***",
+            # Optional: declare the messages this app handles.
+            # [] means match everything (generic/fallback bot).
+            rules=[{"keywords": ["hello"]}],
+            on_offer=on_offer,
+        )
         await client.run()
 
 
     asyncio.run(main())
 
+Rules are declared in the hello frame:
+
+    rules = [
+        {"keywords": ["checkin", "report"]},             # any substring
+        {"regex": "^\\d{1,3}`$", "chat_types": ["group"]}, # AND inside one rule
+    ]
+
+Rules within one item are ANDed; items are ORed. Omit `rules` to keep the
+legacy match-all cascade; pass `rules=[]` to declare a generic bot.
 See the gateway application guide in the HandWeChat repository for the full protocol.
 "@
 [IO.File]::WriteAllText(

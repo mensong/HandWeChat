@@ -15,8 +15,7 @@ from handwechat.ocr_calibration import OcrCalibration
 from handwechat.ocr_channel import OcrChannel
 from handwechat.rate_limit import TokenBucketRateLimiter
 from handwechat.runtime import WeChatRuntime
-
-__version__ = "0.2.0"
+from handwechat.version import __version__
 
 __all__ = [
     "AttachError",

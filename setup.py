@@ -10,7 +10,7 @@ Install dependencies:
 
 from __future__ import annotations
 
-import ast
+import importlib.util
 import subprocess
 import sys
 from pathlib import Path
@@ -76,19 +76,16 @@ def _check_python_version() -> None:
 
 
 def _read_version() -> str:
-    init_path = ROOT / PACKAGE_NAME / "__init__.py"
-    tree = ast.parse(init_path.read_text(encoding="utf-8"), filename=str(init_path))
-    for node in tree.body:
-        if isinstance(node, ast.Assign):
-            for target in node.targets:
-                if (
-                    isinstance(target, ast.Name)
-                    and target.id == "__version__"
-                    and isinstance(node.value, ast.Constant)
-                    and isinstance(node.value.value, str)
-                ):
-                    return node.value.value
-    raise SystemExit(f"Unable to read __version__ from {init_path}.")
+    version_path = ROOT / PACKAGE_NAME / "version.py"
+    spec = importlib.util.spec_from_file_location("_handwechat_version", version_path)
+    if spec is None or spec.loader is None:
+        raise SystemExit(f"Unable to load version module: {version_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    version = getattr(module, "__version__", None)
+    if not isinstance(version, str) or not version:
+        raise SystemExit(f"Unable to read __version__ from {version_path}.")
+    return version
 
 
 def _read_requirements(requirements_file: str) -> list[str]:

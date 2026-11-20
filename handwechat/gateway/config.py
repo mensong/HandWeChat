@@ -19,6 +19,7 @@ class GatewayAppConfig:
     timeout_ms: int = 800
     hold_seconds: float = 120.0
     enabled: bool = True
+    groups: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -145,7 +146,27 @@ def _parse_app(data: dict) -> GatewayAppConfig:
         timeout_ms=max(50, _as_int(data.get("timeout_ms"), 800)),
         hold_seconds=max(0.0, _as_float(data.get("hold_seconds"), 120.0)),
         enabled=bool(data.get("enabled", True)),
+        groups=_parse_groups(data.get("groups")),
     )
+
+
+def _parse_groups(value) -> list[str]:
+    """组的白名单；空数组表示在所有组生效。"""
+
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ValueError("groups 必须是数组")
+    groups: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            raise ValueError("groups 中的每一项必须是字符串")
+        name = item.strip()
+        if not name:
+            raise ValueError("groups 不能包含空字符串")
+        if name not in groups:
+            groups.append(name)
+    return groups
 
 
 def _as_int(value, default: int) -> int:

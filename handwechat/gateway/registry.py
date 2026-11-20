@@ -7,6 +7,7 @@ import time
 from dataclasses import dataclass
 
 from handwechat.gateway.config import GatewayAppConfig, GatewayConfig
+from handwechat.gateway.rules import Rule
 
 
 @dataclass
@@ -14,6 +15,7 @@ class AppRuntime:
     config: GatewayAppConfig
     order: int = 0
     connection: object | None = None
+    rules: tuple[Rule, ...] | None = None
     failures: int = 0
     open_until: float = 0.0
     last_error: str | None = None

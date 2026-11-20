@@ -49,6 +49,7 @@ from handwechat.api.service import (
 )
 from handwechat.errors import AttachError, HWError, WeChatOfflineError
 from handwechat.paths import app_data_path, app_path, resource_path
+from handwechat.version import __version__
 
 
 def _error_code(exc: Exception) -> str:
@@ -217,7 +218,7 @@ def create_app(
     service = service or ApiService(config)
     config.log_dir = str(app_path(config.log_dir))
     configure_api_logging(config)
-    app = FastAPI(title="HandWeChat API", version="0.2.0", lifespan=None)
+    app = FastAPI(title="HandWeChat API", version=__version__, lifespan=None)
 
     @app.get("/", include_in_schema=False)
     def console() -> FileResponse:

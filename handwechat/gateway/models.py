@@ -80,6 +80,7 @@ class PinState:
     state: str | None
     hold_seconds: float
     expires_mono: float
+    chat_title: str = ""
 
     def remaining(self, now: float | None = None) -> float:
         return max(0.0, self.expires_mono - (time.monotonic() if now is None else now))
@@ -93,6 +94,7 @@ class PinState:
             "state": self.state,
             "expires_at": expires_at.isoformat(timespec="seconds"),
             "hold_seconds": self.hold_seconds,
+            "chat_title": self.chat_title,
         }
 
 
