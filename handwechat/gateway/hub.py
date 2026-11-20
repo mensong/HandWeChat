@@ -141,7 +141,7 @@ class AppHub:
             self._connections[app_id] = connection
             runtime = self._registry.get(app_id)
             if runtime is not None:
-                runtime.rules = rules
+                runtime.hello_rules = rules
                 runtime.connection = connection
 
             pin = self._pins.pin

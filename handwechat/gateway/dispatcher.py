@@ -221,7 +221,7 @@ class Dispatcher:
                 if app.connected
                 and not app.circuit_open(now)
                 and self._group_eligible(app, chat_title)
-                and rules_match(app.rules, message, chat_type)
+                and rules_match(app.effective_rules(), message, chat_type)
             ),
             key=lambda app: (app.priority, app.order),
         )

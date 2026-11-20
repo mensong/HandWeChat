@@ -462,6 +462,7 @@ async def main() -> None:
             assert status["pin"]["app_id"] == "game", status["pin"]
             assert status["pin"]["chat_title"] == "群聊A", status["pin"]
             assert status["apps"][0]["rules"]["mode"] == "rules", status["apps"]
+            assert status["apps"][0]["rules"]["source"] == "hello", status["apps"]
             assert status["stats"]["dispatched"] == 3, status["stats"]
             assert status["stats"]["consumed"] == 3, status["stats"]
             assert status["context"]["chat_title"] == "群聊B", status["context"]

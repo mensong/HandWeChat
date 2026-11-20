@@ -223,6 +223,7 @@ def scenario_config_validation() -> None:
                             "priority": 10,
                             "hold_seconds": 30,
                             "groups": ["公司群", "公司群", "测试群"],
+                            "rules": [{"keywords": ["签到"]}],
                         }
                     ],
                 }
@@ -233,6 +234,19 @@ def scenario_config_validation() -> None:
         assert loaded.apps[0].id == "a"
         assert loaded.apps[0].hold_seconds == 30
         assert loaded.apps[0].groups == ["公司群", "测试群"], loaded.apps[0].groups
+        assert loaded.apps[0].rules == [{"keywords": ["签到"]}], loaded.apps[0].rules
+
+        bad_path = Path(tmp) / "bad_gateway_config.json"
+        bad_path.write_text(
+            json.dumps({"apps": [{"id": "a", "rules": [{}]}]}),
+            encoding="utf-8",
+        )
+        try:
+            GatewayConfig.load(bad_path)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("非法配置规则未被拒绝")
     print("PASS 配置校验、同优先级按数组顺序与加载")
 
 

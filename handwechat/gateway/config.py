@@ -7,6 +7,8 @@ import json
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from handwechat.gateway.rules import parse_rules
+
 
 @dataclass
 class GatewayAppConfig:
@@ -20,6 +22,7 @@ class GatewayAppConfig:
     hold_seconds: float = 120.0
     enabled: bool = True
     groups: list[str] = field(default_factory=list)
+    rules: list[dict] | None = None
 
 
 @dataclass
@@ -121,6 +124,8 @@ class GatewayConfig:
             if app.id in seen_ids:
                 raise ValueError(f"应用 id 重复：{app.id}")
             seen_ids.add(app.id)
+            if app.rules is not None:
+                parse_rules(app.rules)
 
     def duplicate_priorities(self) -> dict[int, list[str]]:
         """按配置顺序返回重复出现的 priority 及其应用 id。"""
@@ -147,7 +152,18 @@ def _parse_app(data: dict) -> GatewayAppConfig:
         hold_seconds=max(0.0, _as_float(data.get("hold_seconds"), 120.0)),
         enabled=bool(data.get("enabled", True)),
         groups=_parse_groups(data.get("groups")),
+        rules=_parse_config_rules(data),
     )
+
+
+def _parse_config_rules(data: dict) -> list[dict] | None:
+    """配置里显式写了 rules 就校验并保留原始结构；缺省返回 None。"""
+
+    if "rules" not in data:
+        return None
+    raw = data.get("rules")
+    parse_rules(raw)
+    return raw
 
 
 def _parse_groups(value) -> list[str]:

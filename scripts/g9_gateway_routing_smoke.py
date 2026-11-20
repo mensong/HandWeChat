@@ -72,7 +72,7 @@ def build(config: GatewayConfig, handler, context: dict):
 
 
 def set_rules(registry: AppRegistry, app_id: str, rules) -> None:
-    registry.get(app_id).rules = parse_hello_rules({"rules": rules})
+    registry.get(app_id).hello_rules = parse_hello_rules({"rules": rules})
 
 
 async def scenario_group_filter() -> None:
@@ -212,6 +212,50 @@ async def scenario_unmatched_dropped() -> None:
     print("PASS 没有任何应用命中时直接丢弃")
 
 
+async def scenario_config_rules_priority() -> None:
+    config = GatewayConfig(
+        apps=[app("a", 10, rules=[{"keywords": ["签到"]}])]
+    )
+    dispatcher, offer, _pins, registry = build(
+        config,
+        lambda app_id, _msg, _pinned: Decision("consume"),
+        {"chat_title": "群A", "chat_type": "group"},
+    )
+    set_rules(registry, "a", [{"keywords": ["报名"]}])
+    assert registry.get("a").rules_source == "config"
+
+    outcome = await dispatcher.dispatch(message("签到", 1))
+    assert outcome.consumed_by == "a", outcome
+
+    outcome = await dispatcher.dispatch(message("报名", 2))
+    assert outcome.consumed_by is None, outcome
+    assert offer.calls == [("a", False)], offer.calls
+
+    # 配置热加载立即覆盖已连接应用，不需要重连。
+    registry.reload(
+        GatewayConfig(apps=[app("a", 10, rules=[{"keywords": ["报名"]}])])
+    )
+    offer.calls.clear()
+    outcome = await dispatcher.dispatch(message("报名", 3))
+    assert outcome.consumed_by == "a", outcome
+
+    # 配置显式空数组覆盖 hello，按全匹配处理。
+    registry.reload(GatewayConfig(apps=[app("a", 10, rules=[])]))
+    assert registry.get("a").rules_source == "config"
+    offer.calls.clear()
+    outcome = await dispatcher.dispatch(message("任意内容", 4))
+    assert outcome.consumed_by == "a", outcome
+
+    # 移除配置规则后回落到 hello 上报的规则。
+    registry.reload(GatewayConfig(apps=[app("a", 10)]))
+    assert registry.get("a").rules_source == "hello"
+    offer.calls.clear()
+    outcome = await dispatcher.dispatch(message("报名", 5))
+    assert outcome.consumed_by == "a", outcome
+    dispatcher.close()
+    print("PASS 配置规则优先、热加载即时生效，移除后回落到 hello 规则")
+
+
 def scenario_rule_validation() -> None:
     for raw in (
         {"rules": "bad"},
@@ -233,6 +277,7 @@ async def main() -> None:
     await scenario_catch_all_failover()
     await scenario_pin_bypass_and_chat_scope()
     await scenario_unmatched_dropped()
+    await scenario_config_rules_priority()
     scenario_rule_validation()
     print("全部通过")
 

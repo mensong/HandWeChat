@@ -7,7 +7,7 @@ import time
 from dataclasses import dataclass
 
 from handwechat.gateway.config import GatewayAppConfig, GatewayConfig
-from handwechat.gateway.rules import Rule
+from handwechat.gateway.rules import Rule, parse_rules
 
 
 @dataclass
@@ -15,7 +15,8 @@ class AppRuntime:
     config: GatewayAppConfig
     order: int = 0
     connection: object | None = None
-    rules: tuple[Rule, ...] | None = None
+    hello_rules: tuple[Rule, ...] | None = None
+    config_rules: tuple[Rule, ...] | None = None
     failures: int = 0
     open_until: float = 0.0
     last_error: str | None = None
@@ -39,6 +40,21 @@ class AppRuntime:
     @property
     def connected(self) -> bool:
         return self.connection is not None
+
+    def effective_rules(self) -> tuple[Rule, ...] | None:
+        """配置规则优先；未配置时使用应用 hello 上报的规则。"""
+
+        if self.config_rules is not None:
+            return self.config_rules
+        return self.hello_rules
+
+    @property
+    def rules_source(self) -> str:
+        if self.config_rules is not None:
+            return "config"
+        if self.hello_rules is not None:
+            return "hello"
+        return "legacy"
 
     def circuit_open(self, now: float | None = None) -> bool:
         now = time.monotonic() if now is None else now
@@ -69,7 +85,11 @@ class AppRegistry:
         config.validate()
         self.config = config
         self._apps: dict[str, AppRuntime] = {
-            app.id: AppRuntime(config=app, order=order)
+            app.id: AppRuntime(
+                config=app,
+                order=order,
+                config_rules=_compile_config_rules(app),
+            )
             for order, app in enumerate(config.apps)
         }
 
@@ -91,13 +111,26 @@ class AppRegistry:
         for order, app_config in enumerate(config.apps):
             runtime = previous.get(app_config.id)
             if runtime is None:
-                runtime = AppRuntime(config=app_config, order=order)
+                runtime = AppRuntime(
+                    config=app_config,
+                    order=order,
+                    config_rules=_compile_config_rules(app_config),
+                )
             else:
                 runtime.config = app_config
                 runtime.order = order
+                runtime.config_rules = _compile_config_rules(app_config)
             apps[app_config.id] = runtime
 
         removed = [app_id for app_id in previous if app_id not in apps]
         self._apps = apps
         self.config = config
         return removed
+
+
+def _compile_config_rules(
+    config: GatewayAppConfig,
+) -> tuple[Rule, ...] | None:
+    if config.rules is None:
+        return None
+    return parse_rules(config.rules)

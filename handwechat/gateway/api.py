@@ -167,7 +167,10 @@ def create_app(
                     "priority": runtime.priority,
                     "enabled": runtime.config.enabled,
                     "groups": list(runtime.config.groups),
-                    "rules": summarize_rules(runtime.rules),
+                    "rules": {
+                        **summarize_rules(runtime.effective_rules()),
+                        "source": runtime.rules_source,
+                    },
                     "connected": runtime.connected,
                     "circuit_open": runtime.circuit_open(),
                     "timeout_ms": runtime.config.timeout_ms,
