@@ -167,8 +167,14 @@ class Dispatcher:
                 self.stats.consumed += 1
                 outcome.consumed_by = app.id
                 pin = self._apply_pin(app, decision, chat_title)
-                if decision.reply:
-                    await self._send(app, decision.reply, message, offer_id)
+                if decision.reply or decision.reply_image:
+                    await self._send(
+                        app,
+                        decision.reply or "",
+                        message,
+                        offer_id,
+                        decision.reply_image,
+                    )
                 break
 
             app.skips += 1
@@ -355,6 +361,7 @@ class Dispatcher:
         text: str,
         message: IncomingMessage,
         offer_id: str,
+        image: dict | None = None,
     ) -> None:
         try:
             await self._send_reply(
@@ -362,6 +369,7 @@ class Dispatcher:
                 app_id=app.id,
                 dispatch_id=message.dispatch_id,
                 offer_id=offer_id,
+                image=image,
             )
             self.stats.sends += 1
             self._log(
@@ -370,6 +378,7 @@ class Dispatcher:
                 dispatch_id=message.dispatch_id,
                 offer_id=offer_id,
                 text=text[:_MAX_LOG_CONTENT],
+                image=bool(image),
             )
         except Exception as exc:
             self.stats.send_failures += 1

@@ -327,8 +327,78 @@
 
     .send-actions {
       display: flex;
-      justify-content: flex-end;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
     }
+
+    .attach-controls {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    .attach-button {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 8px 11px;
+      border: 1px solid #b8d8cd;
+      border-radius: 7px;
+      background: var(--accent-soft);
+      color: var(--accent);
+      font: inherit;
+      font-weight: 600;
+      cursor: pointer;
+      flex: none;
+    }
+
+    .attach-button:hover { filter: brightness(0.98); }
+    .attach-button svg { width: 16px; height: 16px; }
+
+    .image-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+      padding: 4px 8px 4px 4px;
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      background: #fafbfc;
+    }
+
+    .image-chip[hidden] { display: none; }
+
+    .image-chip img {
+      width: 32px;
+      height: 32px;
+      object-fit: cover;
+      border-radius: 5px;
+      background: var(--surface-muted);
+      flex: none;
+    }
+
+    .image-chip span {
+      max-width: 160px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    .image-clear {
+      border: 0;
+      background: none;
+      color: var(--text-muted);
+      font: inherit;
+      font-size: 12px;
+      padding: 2px 4px;
+      cursor: pointer;
+    }
+
+    .image-clear:hover { color: var(--danger); }
 
     .button {
       display: inline-flex;
@@ -521,11 +591,12 @@
     }
 
     @media (max-width: 860px) {
-      .app { padding: 12px; }
+      .app { padding: 12px; height: auto; }
       .workspace { grid-template-columns: 1fr; }
       .status-strip { grid-template-columns: 1fr; gap: 10px; }
       .toolbar { justify-content: flex-start; }
-      .side { grid-template-rows: auto minmax(260px, auto) minmax(180px, auto); }
+      .workspace > .panel { max-height: 60vh; }
+      .side { grid-template-rows: auto auto; }
       .message { grid-template-columns: 1fr; gap: 3px; }
     }
   </style>
@@ -602,8 +673,19 @@
         <section class="send-panel">
           <div class="panel-head"><h2 class="panel-title">发送到当前聊天</h2></div>
           <form id="send-form" class="send-body">
-            <textarea id="send-text" placeholder="输入纯文本消息" aria-label="发送内容" required></textarea>
+            <textarea id="send-text" placeholder="输入消息，支持 [@群昵称]；可附加一张图片" aria-label="发送内容"></textarea>
             <div class="send-actions">
+              <div class="attach-controls">
+                <input id="send-image" type="file" accept="image/*" hidden>
+                <button class="attach-button" type="button" id="btn-pick-image">
+                  <i data-lucide="image"></i>选择图片
+                </button>
+                <div id="image-chip" class="image-chip" hidden>
+                  <img id="image-preview" alt="">
+                  <span id="image-name"></span>
+                  <button class="image-clear" type="button" id="btn-clear-image" title="移除图片">移除</button>
+                </div>
+              </div>
               <button class="button" type="submit" id="send-button">
                 <i data-lucide="send"></i>发送
               </button>
@@ -691,6 +773,12 @@
       sendForm: document.getElementById("send-form"),
       sendText: document.getElementById("send-text"),
       sendButton: document.getElementById("send-button"),
+      sendImage: document.getElementById("send-image"),
+      pickImage: document.getElementById("btn-pick-image"),
+      imageChip: document.getElementById("image-chip"),
+      imagePreview: document.getElementById("image-preview"),
+      imageName: document.getElementById("image-name"),
+      clearImage: document.getElementById("btn-clear-image"),
       taskId: document.getElementById("task-id"),
       taskLookup: document.getElementById("btn-lookup"),
       taskList: document.getElementById("task-list"),
@@ -700,6 +788,7 @@
 
     const MESSAGE_MODE_KEY = "handwechat.messageMode";
     const WS_RETRY_DELAYS = [1000, 2000, 5000, 10000];
+    const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 
     const state = {
       cursor: -1,
@@ -717,6 +806,8 @@
       logRequestId: 0,
       logAutoTimer: null,
       logKeywordTimer: null,
+      image: null,
+      imageUrl: null,
     };
 
     function renderIcons() {
@@ -734,8 +825,10 @@
     }
 
     async function request(path, options = {}) {
+      // FormData 需要浏览器自己生成 multipart 边界，不能固定成 JSON
+      const isForm = options.body instanceof FormData;
       const response = await fetch(path, {
-        headers: { "Content-Type": "application/json" },
+        ...(isForm ? {} : { headers: { "Content-Type": "application/json" } }),
         ...options,
       });
       const data = await response.json().catch(() => ({}));
@@ -1124,15 +1217,66 @@
       }
     }
 
+    function setImage(file) {
+      if (state.imageUrl) URL.revokeObjectURL(state.imageUrl);
+      state.image = file || null;
+      state.imageUrl = file ? URL.createObjectURL(file) : null;
+      if (file) {
+        elements.imagePreview.src = state.imageUrl;
+        elements.imageName.textContent = file.name;
+        elements.imageName.title = file.name;
+        elements.imageChip.hidden = false;
+      } else {
+        elements.imagePreview.removeAttribute("src");
+        elements.imageName.textContent = "";
+        elements.imageName.removeAttribute("title");
+        elements.imageChip.hidden = true;
+      }
+    }
+
+    function onImagePicked() {
+      const file = elements.sendImage.files?.[0];
+      if (!file) return;
+      const looksLikeImage =
+        file.type.startsWith("image/") ||
+        /\.(png|jpe?g|bmp|gif|webp)$/i.test(file.name);
+      if (!looksLikeImage) {
+        showError(new Error("请选择图片文件"));
+        elements.sendImage.value = "";
+        return;
+      }
+      if (file.size > MAX_IMAGE_BYTES) {
+        showError(new Error("图片超过 10MB 上限"));
+        elements.sendImage.value = "";
+        return;
+      }
+      setImage(file);
+      clearError();
+    }
+
     async function submitMessage(event) {
       event.preventDefault();
       const text = elements.sendText.value.trim();
-      if (!text) return;
+      const image = state.image;
+      if (!text && !image) return;
       setBusy(elements.sendButton, true);
       try {
-        const queued = await post("/api/v1/send", { text });
-        upsertTask({ ...queued, text, submitted_at: new Date().toISOString() });
+        let queued;
+        let displayText = text;
+        if (image) {
+          const form = new FormData();
+          form.append("file", image);
+          if (text) form.append("text", text);
+          form.append("image_name", image.name);
+          queued = await request("/api/v1/send/image", { method: "POST", body: form });
+          displayText = text ? `${text} [图片] ${image.name}` : `[图片] ${image.name}`;
+        } else {
+          queued = await post("/api/v1/send", { text });
+        }
+        upsertTask({ ...queued, text: displayText, submitted_at: new Date().toISOString() });
         elements.sendText.value = "";
+        elements.sendImage.value = "";
+        setImage(null);
         clearError();
       } catch (error) {
         showError(error);
@@ -1351,6 +1495,12 @@
     elements.stop.addEventListener("click", () => setListener(false));
     elements.refresh.addEventListener("click", refreshAll);
     elements.sendForm.addEventListener("submit", submitMessage);
+    elements.pickImage.addEventListener("click", () => elements.sendImage.click());
+    elements.sendImage.addEventListener("change", onImagePicked);
+    elements.clearImage.addEventListener("click", () => {
+      elements.sendImage.value = "";
+      setImage(null);
+    });
     elements.taskLookup.addEventListener("click", lookupTask);
     elements.taskId.addEventListener("keydown", event => {
       if (event.key === "Enter") lookupTask();

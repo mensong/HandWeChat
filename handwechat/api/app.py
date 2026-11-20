@@ -13,8 +13,11 @@ from typing import Annotated
 
 from fastapi import (
     FastAPI,
+    File,
+    Form,
     Query,
     Request,
+    UploadFile,
     WebSocket,
     WebSocketDisconnect,
     status,
@@ -49,10 +52,14 @@ from handwechat.api.service import (
 )
 from handwechat.errors import AttachError, HWError, WeChatOfflineError
 from handwechat.paths import app_data_path, app_path, resource_path
+from handwechat.sending import MAX_IMAGE_BYTES
 from handwechat.version import __version__
 
 
 def _error_code(exc: Exception) -> str:
+    code = getattr(exc, "code", None)
+    if isinstance(code, str) and code:
+        return code
     if isinstance(exc, WeChatOfflineError):
         return "WECHAT_OFFLINE"
     if isinstance(exc, AttachError):
@@ -289,7 +296,7 @@ def create_app(
 
     @app.exception_handler(HWError)
     async def hw_error_handler(_request: Request, exc: HWError) -> JSONResponse:
-        error_status = (
+        error_status = getattr(exc, "status", None) or (
             status.HTTP_404_NOT_FOUND
             if isinstance(exc, (SendTaskNotFoundError, LogNotFoundError))
             else status.HTTP_409_CONFLICT
@@ -389,6 +396,26 @@ def create_app(
     )
     def send_message(request: SendRequest) -> SendTaskQueuedResponse:
         task = service.send(request.text)
+        return SendTaskQueuedResponse(task_id=task.task_id, status="queued")
+
+    @app.post(
+        "/api/v1/send/image",
+        response_model=SendTaskQueuedResponse,
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    async def send_image(
+        file: Annotated[UploadFile, File()],
+        text: Annotated[str, Form()] = "",
+        image_name: Annotated[str, Form()] = "",
+    ) -> SendTaskQueuedResponse:
+        data = await file.read(MAX_IMAGE_BYTES + 1)
+        task = await asyncio.to_thread(
+            service.send_image,
+            data,
+            filename=file.filename or "",
+            text=text,
+            image_name=image_name,
+        )
         return SendTaskQueuedResponse(task_id=task.task_id, status="queued")
 
     @app.get("/api/v1/send/{task_id}", response_model=SendTaskResponse)

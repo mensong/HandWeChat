@@ -21,6 +21,7 @@ from handwechat.gateway.models import (
     now_iso,
 )
 from handwechat.gateway.pin import PinManager
+from handwechat.gateway.protocol import parse_image
 from handwechat.gateway.registry import AppRegistry, AppRuntime
 from handwechat.gateway.rules import RuleError, parse_hello_rules
 
@@ -283,13 +284,23 @@ class AppHub:
                 connection.resolve(offer_id, decision)
             elif kind == "send":
                 text = payload.get("text")
-                if isinstance(text, str) and text and self._send_text is not None:
+                if not isinstance(text, str):
+                    text = ""
+                try:
+                    image = parse_image(payload.get("image"))
+                except ValueError as exc:
+                    logger.warning(
+                        "应用 %s 的图片非法，已忽略：%s", connection.app_id, exc
+                    )
+                    image = None
+                if (text or image) and self._send_text is not None:
                     asyncio.create_task(
                         self._send_from_app(
                             connection.app_id,
                             text,
                             str(payload.get("request_id") or ""),
                             str(payload.get("dispatch_id") or ""),
+                            image,
                         )
                     )
             elif kind in ("ping", "pong"):
@@ -311,7 +322,12 @@ class AppHub:
                 return
 
     async def _send_from_app(
-        self, app_id: str, text: str, request_id: str, dispatch_id: str
+        self,
+        app_id: str,
+        text: str,
+        request_id: str,
+        dispatch_id: str,
+        image: dict | None = None,
     ) -> None:
         try:
             await self._send_text(
@@ -319,6 +335,7 @@ class AppHub:
                 app_id=app_id,
                 request_id=request_id,
                 dispatch_id=dispatch_id,
+                image=image,
             )
         except Exception as exc:
             logger.warning("应用 %s 主动发送失败：%s", app_id, exc)

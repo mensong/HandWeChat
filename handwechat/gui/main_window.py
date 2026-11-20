@@ -4,10 +4,12 @@
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 from PySide6.QtWidgets import (
     QDialog,
+    QFileDialog,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -113,11 +115,14 @@ class MainWindow(QMainWindow):
             "请先将微信 设置→快捷键→发送消息 设为 Ctrl+Enter"
         )
         self.input_edit.returnPressed.connect(self._send_current)
+        self.image_button = QPushButton("选图")
+        self.image_button.clicked.connect(self._send_image)
         self.send_button = QPushButton("发送")
         self.send_button.clicked.connect(self._send_current)
         self.queue_label = QLabel("发送队列：0")
         for widget in (
             self.input_edit,
+            self.image_button,
             self.send_button,
             self.queue_label,
         ):
@@ -358,21 +363,42 @@ class MainWindow(QMainWindow):
             chunks.append("<div style='color:#777'>暂无消息</div>")
         self.message_view.setHtml("".join(chunks))
 
-    def _send_current(self) -> None:
+    def _ready_to_send(self) -> bool:
         if not self.controller:
-            return
+            return False
         if not self.controller.channel.running:
             self._log("OCR 监听未启动，不能发送")
-            return
+            return False
         if not self.controller.active_chat:
             self._log("尚未识别到当前微信聊天，不能发送")
+            return False
+        return True
+
+    def _send_current(self) -> None:
+        if not self._ready_to_send():
             return
         text = self.input_edit.text().strip()
         if not text:
             return
-        task_id = self.controller.send_text(text)
+        task_id = self.controller.send(text)
         self.input_edit.clear()
         self._log(f"已入发送队列：{task_id} {text!r}")
+
+    def _send_image(self) -> None:
+        if not self._ready_to_send():
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "选择要发送的图片",
+            "",
+            "图片 (*.png *.jpg *.jpeg *.bmp *.gif *.webp);;所有文件 (*.*)",
+        )
+        if not path:
+            return
+        text = self.input_edit.text().strip()
+        task_id = self.controller.send(text, image_path=path)
+        self.input_edit.clear()
+        self._log(f"已入发送队列：{task_id} [图片] {Path(path).name}")
 
     def _on_send_started(self, task_id: str, text: str) -> None:
         self._log(f"开始发送：{task_id} {text!r}")

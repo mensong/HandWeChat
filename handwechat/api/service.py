@@ -3,14 +3,19 @@
 
 from __future__ import annotations
 
+import io
 import logging
 import os
 import threading
 import ctypes
+import time
+import uuid
 from ctypes import wintypes
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, Optional
+
+from PIL import Image
 
 from handwechat.api.config import ApiConfig
 from handwechat.api.message_buffer import BufferedMessage, MessageBuffer
@@ -18,6 +23,7 @@ from handwechat.api.send_tasks import SendTask, SendTaskStore
 from handwechat.errors import HWError, WeChatOfflineError
 from handwechat.ocr_calibration import OcrCalibration, load_ocr_calibration
 from handwechat.paths import app_data_path
+from handwechat.sending import MAX_IMAGE_BYTES, SendPayload
 
 
 class SendTaskNotFoundError(HWError):
@@ -30,6 +36,61 @@ class OcrChannelNotRunningError(HWError):
 
 class LogNotFoundError(HWError):
     """日志文件不存在或无法读取。"""
+
+
+class InvalidImageError(HWError):
+    """图片无法识别或格式不支持。"""
+
+    status = 400
+    code = "INVALID_IMAGE"
+
+
+class ImageTooLargeError(InvalidImageError):
+    """图片超过大小上限。"""
+
+    status = 413
+    code = "IMAGE_TOO_LARGE"
+
+
+_SEND_CACHE_NAME = "send_cache"
+_SEND_CACHE_TTL_SECONDS = 600
+_RAW_IMAGE_SUFFIX = {"PNG": ".png", "JPEG": ".jpg", "BMP": ".bmp", "GIF": ".gif"}
+
+
+def _prune_send_cache(directory: Path, ttl_seconds: int) -> None:
+    cutoff = time.time() - ttl_seconds
+    try:
+        for item in directory.iterdir():
+            if item.is_file() and item.stat().st_mtime < cutoff:
+                item.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _save_image(data: bytes, directory: Path) -> Path:
+    """校验图片并落盘；GIF 等原始格式原样保存，其他格式转 PNG。"""
+
+    try:
+        with Image.open(io.BytesIO(data)) as image:
+            image_format = (image.format or "").upper()
+            if image_format in _RAW_IMAGE_SUFFIX:
+                image.verify()
+                path = directory / f"{uuid.uuid4().hex}{_RAW_IMAGE_SUFFIX[image_format]}"
+                path.write_bytes(data)
+                return path
+            image.load()
+            converted = image.convert(
+                "RGBA" if image.mode in ("RGBA", "LA", "P") else "RGB"
+            )
+    except Exception as exc:
+        raise InvalidImageError("无法识别的图片内容") from exc
+
+    path = directory / f"{uuid.uuid4().hex}.png"
+    try:
+        converted.save(path, format="PNG")
+    except OSError as exc:
+        raise InvalidImageError(f"图片缓存写入失败：{exc}") from exc
+    return path
 
 
 _LOG_SCAN_BYTES = 2 * 1024 * 1024
@@ -254,8 +315,40 @@ class ApiService:
 
     def send(self, text: str) -> SendTask:
         channel = self._require_ocr_channel()
-        task = self.send_tasks.create(text)
-        channel.send(text, task_id=task.task_id)
+        payload = SendPayload(text=text)
+        task = self.send_tasks.create(payload.display_text())
+        channel.send(payload, task_id=task.task_id)
+        return task
+
+    def send_image(
+        self,
+        data: bytes,
+        *,
+        filename: str = "",
+        text: str = "",
+        image_name: str = "",
+    ) -> SendTask:
+        channel = self._require_ocr_channel()
+        if not data:
+            raise InvalidImageError("图片内容为空")
+        if len(data) > MAX_IMAGE_BYTES:
+            raise ImageTooLargeError(
+                f"图片超过 {MAX_IMAGE_BYTES // (1024 * 1024)}MB 上限"
+            )
+        directory = app_data_path(_SEND_CACHE_NAME)
+        directory.mkdir(parents=True, exist_ok=True)
+        _prune_send_cache(directory, _SEND_CACHE_TTL_SECONDS)
+        image_path = _save_image(data, directory)
+        display_name = (
+            Path(image_name).name or Path(filename).name or image_path.name
+        )
+        payload = SendPayload(
+            text=text,
+            image_path=image_path,
+            image_name=display_name,
+        )
+        task = self.send_tasks.create(payload.display_text())
+        channel.send(payload, task_id=task.task_id)
         return task
 
     def get_send_task(self, task_id: str) -> SendTask:

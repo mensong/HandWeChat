@@ -52,7 +52,7 @@ def build(config: GatewayConfig, handler, context: dict):
     pins = PinManager()
     offer = FakeOffer(handler)
 
-    async def send_reply(text, *, app_id, dispatch_id="", offer_id=""):
+    async def send_reply(text, *, app_id, dispatch_id="", offer_id="", image=None):
         return None
 
     async def notify(pin):

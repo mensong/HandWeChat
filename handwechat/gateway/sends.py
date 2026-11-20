@@ -38,6 +38,7 @@ class SendCoordinator:
         app_id: str,
         dispatch_id: str = "",
         offer_id: str = "",
+        image: dict | None = None,
     ) -> None:
         await self._send(
             text,
@@ -45,6 +46,7 @@ class SendCoordinator:
             dispatch_id=dispatch_id,
             offer_id=offer_id,
             request_id="",
+            image=image,
         )
 
     async def send_from_app(
@@ -54,6 +56,7 @@ class SendCoordinator:
         app_id: str,
         request_id: str = "",
         dispatch_id: str = "",
+        image: dict | None = None,
     ) -> None:
         await self._send(
             text,
@@ -61,6 +64,7 @@ class SendCoordinator:
             dispatch_id=dispatch_id,
             offer_id="",
             request_id=request_id,
+            image=image,
         )
 
     async def close(self) -> None:
@@ -79,9 +83,10 @@ class SendCoordinator:
         dispatch_id: str,
         offer_id: str,
         request_id: str,
+        image: dict | None = None,
     ) -> None:
         try:
-            result = await self._upstream.send_text(text)
+            result = await self._upstream.send_text(text, image=image)
         except Exception as exc:
             error = f"{type(exc).__name__}: {exc}"
             await self._notify_safe(
@@ -123,6 +128,7 @@ class SendCoordinator:
                     "request_id": request_id,
                     "task_id": task_id,
                     "text": text[:200],
+                    "image": bool(image),
                 },
                 ensure_ascii=False,
                 separators=(",", ":"),

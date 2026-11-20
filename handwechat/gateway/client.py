@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 from dataclasses import dataclass, replace
 import inspect
 import json
@@ -249,11 +250,21 @@ class GatewayClient:
                 pass
 
     async def send(
-        self, text: str, request_id: str = "", dispatch_id: str = ""
+        self,
+        text: str,
+        request_id: str = "",
+        dispatch_id: str = "",
+        image: bytes | None = None,
+        image_name: str = "image",
     ) -> None:
         """主动发一条微信消息（仍由网关统一发送）。"""
 
         payload = {"type": "send", "text": text}
+        if image is not None:
+            payload["image"] = {
+                "name": image_name or "image",
+                "data": base64.b64encode(image).decode("ascii"),
+            }
         if request_id:
             payload["request_id"] = request_id
         if dispatch_id:
@@ -399,6 +410,8 @@ def _decision_payload(decision: Decision) -> dict:
     payload = {"action": decision.action}
     if decision.reply is not None:
         payload["reply"] = decision.reply
+    if decision.reply_image is not None:
+        payload["reply_image"] = decision.reply_image
     if decision.pin is not None:
         payload["pin"] = decision.pin
     if decision.hold_seconds is not None:

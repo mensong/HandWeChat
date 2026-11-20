@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from typing import Any, Callable, Optional
+from pathlib import Path
 import uuid
 
 from PySide6.QtCore import QObject, QThread, Signal
@@ -13,6 +14,7 @@ from handwechat.ocr_calibration import load_ocr_calibration
 from handwechat.ocr_channel import OcrChannel, configure_ocr_logging
 from handwechat.paths import app_data_path
 from handwechat.runtime import WeChatRuntime
+from handwechat.sending import SendPayload
 
 
 class FunctionWorker(QThread):
@@ -119,9 +121,15 @@ class WeChatController(QObject):
     def stop_listener(self) -> None:
         self.runtime.stop_listener()
 
-    def send_text(self, text: str) -> str:
+    def send(self, text: str, image_path: str | None = None) -> str:
         task_id = f"gui_{uuid.uuid4().hex}"
-        self.channel.send(text, task_id=task_id)
+        path = Path(image_path) if image_path else None
+        payload = SendPayload(
+            text=text,
+            image_path=path,
+            image_name=path.name if path else "",
+        )
+        self.channel.send(payload, task_id=task_id)
         return task_id
 
     def shutdown(self) -> None:

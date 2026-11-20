@@ -14,6 +14,7 @@ import logging
 from pathlib import Path
 import queue
 import re
+import struct
 import threading
 import time
 from typing import Callable, Optional, Sequence
@@ -27,6 +28,7 @@ from handwechat.models import BaseMessage, MessageAttr, MessageType, TextMessage
 from handwechat.ocr_win import _offline_model_args
 from handwechat.paths import ocr_models_dir
 from handwechat.rate_limit import TokenBucketRateLimiter
+from handwechat.sending import SendPayload
 
 
 SendCompletedCallback = Callable[[str, str, bool, str], None]
@@ -40,6 +42,7 @@ logger = logging.getLogger("handwechat.ocr")
 _MENTION_PICKER_DELAY = 0.3
 _MENTION_FILTER_DELAY = 0.5
 _MENTION_SELECT_DELAY = 0.2
+_IMAGE_PREVIEW_DELAY = 1.0
 
 
 def configure_ocr_logging(log_path: str | Path) -> None:
@@ -368,7 +371,7 @@ class OcrSendQueue:
 
     def __init__(
         self,
-        sender: Callable[[str], bool],
+        sender: Callable[[SendPayload], bool],
         *,
         max_per_minute: int = 20,
         on_send_started: Optional[SendStartedCallback] = None,
@@ -376,14 +379,14 @@ class OcrSendQueue:
     ) -> None:
         self._sender = sender
         self._rate_limiter = TokenBucketRateLimiter(max_per_minute)
-        self._queue: "queue.Queue[tuple[str, str] | None]" = queue.Queue()
+        self._queue: "queue.Queue[tuple[SendPayload, str] | None]" = queue.Queue()
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._on_send_started = on_send_started
         self._on_send_completed = on_send_completed
 
-    def submit(self, text: str, *, task_id: str) -> None:
-        self._queue.put((text, task_id))
+    def submit(self, payload: SendPayload, *, task_id: str) -> None:
+        self._queue.put((payload, task_id))
 
     @property
     def size(self) -> int:
@@ -418,7 +421,7 @@ class OcrSendQueue:
             text, task_id = item
             if self._on_send_started:
                 try:
-                    self._on_send_started(task_id, text)
+                    self._on_send_started(task_id, text.display_text())
                 except Exception:
                     pass
             detail = ""
@@ -430,7 +433,9 @@ class OcrSendQueue:
                 detail = f"{type(exc).__name__}: {exc}"
             if self._on_send_completed:
                 try:
-                    self._on_send_completed(task_id, text, ok, detail)
+                    self._on_send_completed(
+                        task_id, text.display_text(), ok, detail
+                    )
                 except Exception:
                     pass
 
@@ -510,7 +515,7 @@ class OcrChannel:
         self._running = False
         self._send_lock = threading.RLock()
         self.send_queue = OcrSendQueue(
-            self.send_text,
+            self._send_payload,
             max_per_minute=self.max_send_per_minute,
             on_send_started=on_send_started,
             on_send_completed=on_send_completed,
@@ -661,25 +666,29 @@ class OcrChannel:
                 thread.join(timeout)
         self._save_state()
 
-    def send(self, text: str, *, task_id: str) -> None:
-        self.send_queue.submit(text, task_id=task_id)
+    def send(self, payload: SendPayload, *, task_id: str) -> None:
+        self.send_queue.submit(payload, task_id=task_id)
 
-    def send_text(self, text: str) -> bool:
-        """Type text into the active chat and send it with Ctrl+Enter."""
+    def _send_payload(self, payload: SendPayload) -> bool:
+        """Type the payload into the active chat and send it with Ctrl+Enter."""
 
-        if not text:
+        if not payload.text and payload.image_path is None:
             raise ValueError("发送内容不能为空")
-        segments = split_mentions(text)
+        if payload.image_path is not None and not payload.image_path.is_file():
+            raise ValueError(f"图片不存在：{payload.image_path}")
         with self._send_lock:
             rect = self._confirm_chat()
             self._click_input(rect)
             self._assert_wechat_foreground()
             self._clear_input()
-            for kind, value in segments:
+            for kind, value in split_mentions(payload.text):
                 if kind == "mention":
                     self._type_mention(value)
                 else:
                     self._paste_text(value)
+            if payload.image_path is not None:
+                self._paste_image(payload.image_path)
+                time.sleep(_IMAGE_PREVIEW_DELAY)
             time.sleep(0.15)
             self._press_send_shortcut()
             return True
@@ -1311,6 +1320,10 @@ class OcrChannel:
         self._paste_clipboard()
         time.sleep(0.1)
 
+    def _paste_image(self, path: Path) -> None:
+        self._set_clipboard_files([path])
+        self._paste_clipboard()
+
     def _type_mention(self, name: str) -> None:
         """Trigger the mention picker, filter it by name and select the match."""
 
@@ -1473,10 +1486,9 @@ class OcrChannel:
         user32.mouse_event(0x0002, 0, 0, 0, 0)
         user32.mouse_event(0x0004, 0, 0, 0, 0)
 
-    def _set_clipboard_text(self, text: str) -> None:
+    def _set_clipboard_bytes(self, format_id: int, payload: bytes) -> None:
         user32 = ctypes.windll.user32
         kernel32 = ctypes.windll.kernel32
-        CF_UNICODETEXT = 13
         GMEM_MOVEABLE = 0x0002
         kernel32.GlobalAlloc.argtypes = [wintypes.UINT, ctypes.c_size_t]
         kernel32.GlobalAlloc.restype = wintypes.HGLOBAL
@@ -1488,8 +1500,7 @@ class OcrChannel:
         kernel32.GlobalFree.restype = wintypes.HGLOBAL
         user32.SetClipboardData.argtypes = [wintypes.UINT, wintypes.HANDLE]
         user32.SetClipboardData.restype = wintypes.HANDLE
-        encoded = text.encode("utf-16le") + b"\x00\x00"
-        handle = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(encoded))
+        handle = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(payload))
         if not handle:
             raise OSError("GlobalAlloc failed")
         locked = kernel32.GlobalLock(handle)
@@ -1497,7 +1508,7 @@ class OcrChannel:
             kernel32.GlobalFree(handle)
             raise OSError("GlobalLock failed")
         try:
-            ctypes.memmove(locked, encoded, len(encoded))
+            ctypes.memmove(locked, payload, len(payload))
         finally:
             kernel32.GlobalUnlock(handle)
 
@@ -1506,11 +1517,21 @@ class OcrChannel:
             raise OSError("OpenClipboard failed")
         try:
             user32.EmptyClipboard()
-            if not user32.SetClipboardData(CF_UNICODETEXT, handle):
+            if not user32.SetClipboardData(format_id, handle):
                 kernel32.GlobalFree(handle)
                 raise OSError("SetClipboardData failed")
         finally:
             user32.CloseClipboard()
+
+    def _set_clipboard_text(self, text: str) -> None:
+        self._set_clipboard_bytes(13, text.encode("utf-16le") + b"\x00\x00")
+
+    def _set_clipboard_files(self, paths: Sequence[Path]) -> None:
+        """Put files on the clipboard as CF_HDROP, like Explorer copy."""
+
+        entries = "".join(f"{Path(path).resolve()}\0" for path in paths) + "\0"
+        header = struct.pack("<IiiII", 20, 0, 0, 0, 1)  # DROPFILES, fWide=1
+        self._set_clipboard_bytes(15, header + entries.encode("utf-16le"))
 
     def _press_combo(self, modifier: int, key: int) -> None:
         user32 = ctypes.windll.user32

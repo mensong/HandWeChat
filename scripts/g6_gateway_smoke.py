@@ -62,7 +62,7 @@ def build(config: GatewayConfig, handler):
     sent: list[tuple[str, str]] = []
     expired: list[PinState] = []
 
-    async def send_reply(text, *, app_id, dispatch_id="", offer_id=""):
+    async def send_reply(text, *, app_id, dispatch_id="", offer_id="", image=None):
         sent.append((app_id, text))
 
     async def notify(pin):

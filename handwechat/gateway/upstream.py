@@ -4,9 +4,12 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import urllib.request
+import uuid
+from pathlib import Path
 from typing import Awaitable, Callable
 
 import websockets
@@ -90,9 +93,13 @@ class UpstreamClient:
                 logger.exception("上游健康状态回调失败")
             await asyncio.sleep(interval)
 
-    async def send_text(self, text: str) -> dict:
+    async def send_text(self, text: str, *, image: dict | None = None) -> dict:
+        if image is None:
+            return await asyncio.to_thread(
+                self._post_json, "/api/v1/send", {"text": text}
+            )
         return await asyncio.to_thread(
-            self._post_json, "/api/v1/send", {"text": text}
+            self._post_multipart, "/api/v1/send/image", text, image
         )
 
     async def fetch_send_task(self, task_id: str) -> dict:
@@ -159,8 +166,61 @@ class UpstreamClient:
         with urllib.request.urlopen(request, timeout=_REQUEST_TIMEOUT_S) as response:
             return _loads(response.read())
 
+    def _post_multipart(self, path: str, text: str, image: dict) -> dict:
+        boundary = f"----handwechat{uuid.uuid4().hex}"
+        raw = base64.b64decode(image["data"])
+        name = str(image.get("name") or "image")
+        body = b"".join(
+            [
+                _form_field(boundary, "text", text.encode("utf-8")),
+                _form_field(boundary, "image_name", name.encode("utf-8")),
+                (
+                    f"--{boundary}\r\n"
+                    f'Content-Disposition: form-data; name="file"; '
+                    f'filename="{_ascii_filename(name)}"\r\n'
+                    "Content-Type: application/octet-stream\r\n\r\n"
+                ).encode("ascii")
+                + raw
+                + b"\r\n",
+                f"--{boundary}--\r\n".encode("ascii"),
+            ]
+        )
+        request = urllib.request.Request(
+            self._base_url() + path,
+            data=body,
+            headers={
+                "Content-Type": f"multipart/form-data; boundary={boundary}"
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=_REQUEST_TIMEOUT_S) as response:
+            return _loads(response.read())
+
     def _base_url(self) -> str:
         return self._config.upstream_http_url.rstrip("/")
+
+
+def _form_field(boundary: str, name: str, value: bytes) -> bytes:
+    return (
+        f"--{boundary}\r\n"
+        f'Content-Disposition: form-data; name="{name}"\r\n\r\n'
+    ).encode("ascii") + value + b"\r\n"
+
+
+def _ascii_filename(name: str) -> str:
+    original = Path(name).name
+    cleaned = "".join(
+        ch for ch in original if ch.isascii() and ch not in '"\\\r\n'
+    )
+    suffix = (
+        Path(cleaned).suffix
+        if cleaned and not cleaned.startswith(".")
+        else ""
+    )
+    stem = cleaned[: len(cleaned) - len(suffix)] if suffix else cleaned
+    if not stem or stem.startswith("."):
+        return f"image{suffix}" if suffix else "image"
+    return cleaned
 
 
 def _loads(raw: bytes) -> dict:
