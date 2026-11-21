@@ -215,7 +215,7 @@ OCR 通道从聊天截图中只能拿到「文字 + 坐标」。当前 `_parse_c
 - 每个非裁切气泡输出一条 `OcrMessage`，文本为行文本按 `\n` 连接；
 - `score` 取气泡各行平均分（沿用现有字段）；
 - 时间戳输出 `TIME` 消息，居中的系统提示输出 `SYSTEM` 消息；其余 `PAGE` 行（昵称）与 `OTHER` 行不产生消息；
-- 时间/系统消息同样进入 API 消息缓冲区与网关消息流；`MessageResponse`、`IncomingMessage` 与应用 payload 新增 `type` 字段（`text` / `time` / `system`），下游可自行区分；
+- 时间/系统消息同样进入 API 消息缓冲区与网关消息流；`MessageResponse`、`IncomingMessage` 与应用 payload 新增 `type` 字段（`text` / `time` / `system`），`/api/v1/ws/messages` 与 HTTP 消息接口都会返回；
 - 气泡消息与时间/系统消息按 y 坐标合并排序；
 - `_consume_frame` 按 attr 分别构造 `TextMessage` / `TimeMessage` / `SystemMessage`；
 - 己方消息仍由 `_consume_frame` 统一过滤，行为不变。
