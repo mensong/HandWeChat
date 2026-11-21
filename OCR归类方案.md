@@ -146,6 +146,8 @@ OCR 通道从聊天截图中只能拿到「文字 + 坐标」。当前 `_parse_c
 - 选中标签对应的调色板颜色写入 `bg_color`，供间隙带与顶裁切判定使用；
 - 描边贴边、窄气泡等导致左右点落到页面时，靠上下点投票或文字框众数兜底。
 
+**引号复核**：识别结果里中文引号数量不平衡时（例如 `“A”拍了拍“B`），对检测框外扩 4px 做一次只识别；若结果引号平衡且分数 ≥ 0.5，则采用复核结果。用于修正端到端路径偶发漏掉末尾引号的问题。
+
 ### 4.4 逻辑行合并（解决「一行被切成两段」）
 
 两行合并为一条逻辑行，需同时满足：
@@ -243,6 +245,8 @@ OCR 通道从聊天截图中只能拿到「文字 + 坐标」。当前 `_parse_c
 | 底色探针偏移 | 2 px | `bg_probe_offset`，上下左右各取一点 |
 | 底色探针小块 | 3 × 3 | 每个点取众数色 |
 | 底色探针最小票数 | 3 / 4 | 不足则回退文字框众数 |
+| 引号复核外扩 | 4 px | 引号不平衡时 rec-only |
+| 引号复核最低分 | 0.5 | 低于则保留原结果 |
 | 页面 ↔ 对方距离下限 | 8 | 保存前校验 |
 | 其它颜色组合距离下限 | 30 | 保存前校验 |
 | 调色板匹配容差 | 6 | 每通道最大差 |
@@ -277,7 +281,7 @@ OCR 通道从聊天截图中只能拿到「文字 + 坐标」。当前 `_parse_c
 | `handwechat/ocr_calibration.py` | `OcrCalibration` 增加 `palette`（page/friend/self）；JSON 版本升到 3；`from_dict` 缺失时返回空；保存前两两距离校验 |
 | `handwechat/gui/calibration_dialog.py` | 新增 3 个取色步骤、`color` 模式、单像素取色、色块与 RGB 预览、「默认色」按钮、保存校验 |
 | `handwechat/gui/main_window.py` | 标定状态显示是否缺少底色；缺少 palette 时禁用开始监听并提示 |
-| `handwechat/ocr_channel.py` | 构造函数接收 `palette`；四点投票判底色（`bg_probe_offset` 可配置）；失效检测；输出 TIME/SYSTEM 消息；放宽 PaddleOCR 检测参数；发送期间暂停截图；旧聚类保留为 `_parse_chat_lines_legacy` |
+| `handwechat/ocr_channel.py` | 构造函数接收 `palette`；四点投票判底色（`bg_probe_offset` 可配置）；引号不平衡时 rec-only 复核；失效检测；输出 TIME/SYSTEM 消息；放宽 PaddleOCR 检测参数；发送期间暂停截图；旧聚类保留为 `_parse_chat_lines_legacy` |
 | `handwechat/api/service.py` | 透传 palette；缺少 palette 时启动 OCR 报明确错误 |
 | `handwechat/api/message_buffer.py` | 只排除 `OTHER`；`text` / `time` / `system` 全部进入缓冲，`BufferedMessage` 增加 `type` |
 | `handwechat/api/models.py`、`handwechat/api/app.py` | `MessageResponse` 增加 `type` |
@@ -336,6 +340,11 @@ OCR 通道从聊天截图中只能拿到「文字 + 坐标」。当前 `_parse_c
 - 1/2/3 号样图共 38 行，4 点 3×3 投票全部达到 ≥3/4 一致；
 - 纯单点采样时有 2 处异常（文字边缘色、顶部越界），改用 3×3 小块 + 多数投票后消失；
 - 三张样图的解析结果与替换前完全一致，解析耗时约 7–9ms/帧。
+
+**引号复核实测**
+
+- 同一拍一拍提示在不同渲染行：4.png 原识别漏掉末尾 `”`，复核后恢复；5.png 保持不变；
+- 1–3 号样图回归无变化。
 
 ## 8. 已知边界（本方案不处理）
 

@@ -54,6 +54,11 @@ _IMAGE_PREVIEW_DELAY = 1.0
 # 发送结束后等 UI 稳定（浮层收起、气泡动画）再恢复截图。
 _SEND_SETTLE_DELAY = 0.5
 
+# 中文引号成对出现；端到端识别偶尔会漏掉末尾引号，用只识别路径复核。
+_QUOTE_PAIRS = (("“", "”"), ("「", "」"))
+_QUOTE_RETRY_PAD = 4
+_QUOTE_RETRY_MIN_SCORE = 0.5
+
 # 小字号的短文本（数字、单字）检测框常常偏松，rec 会给出 ">"、"1" 这类误识，
 # 且不一定低分；短文本分数不够高就按墨迹紧裁后再识别一次，取更有把握的结果。
 _RETRY_SCORE = 0.97
@@ -364,6 +369,11 @@ class PaddleLayoutReader:
                         text, score = self._retry_short_line(
                             engine, rgb, box, text, score
                         )
+                    # 中文引号不平衡时，用只识别路径复核末尾引号。
+                    if _quote_imbalance(text) > 0:
+                        text, score = self._retry_quote_line(
+                            engine, rgb, box, text, score
+                        )
                     xs = [int(point[0] / scale) for point in box]
                     ys = [int(point[1] / scale) for point in box]
                     lines.append(
@@ -415,6 +425,42 @@ class PaddleLayoutReader:
                 and retry_score > score
             ):
                 return retry_text.strip(), retry_score
+        except Exception:
+            return text, score
+        return text, score
+
+    def _retry_quote_line(
+        self,
+        engine,
+        image: Image.Image,
+        box,
+        text: str,
+        score: float,
+    ) -> tuple[str, float]:
+        """Re-recognize an unbalanced-quote line with a slightly padded crop.
+
+        End-to-end detection sometimes drops the trailing quote even with a high
+        score; rec-only on the padded crop usually keeps it.
+        """
+
+        try:
+            crop = _crop_detect_box(image, box, pad=_QUOTE_RETRY_PAD)
+            if crop is None:
+                return text, score
+            bgr = np.asarray(crop)[:, :, ::-1]
+            with self._lock:
+                result = engine.ocr(bgr, det=False)
+            retried = _first_rec_result(result)
+            if retried is None:
+                return text, score
+            retry_text, retry_score = retried
+            retry_text = retry_text.strip()
+            if (
+                retry_text
+                and retry_score >= _QUOTE_RETRY_MIN_SCORE
+                and _quote_imbalance(retry_text) < _quote_imbalance(text)
+            ):
+                return retry_text, retry_score
         except Exception:
             return text, score
         return text, score
@@ -498,15 +544,17 @@ def _ocr_upscale_factor(size: tuple[int, int]) -> float:
     return min(3.0, max(2.0, 700.0 / width))
 
 
-def _crop_detect_box(image: Image.Image, box) -> Optional[Image.Image]:
-    """Crop the detected polygon with a couple of pixels of slack."""
+def _crop_detect_box(
+    image: Image.Image, box, pad: int = 2
+) -> Optional[Image.Image]:
+    """Crop the detected polygon with a few pixels of slack."""
 
     xs = [float(point[0]) for point in box]
     ys = [float(point[1]) for point in box]
-    x0 = max(0, int(min(xs)) - 2)
-    y0 = max(0, int(min(ys)) - 2)
-    x1 = min(image.width, int(max(xs)) + 3)
-    y1 = min(image.height, int(max(ys)) + 3)
+    x0 = max(0, int(min(xs)) - pad)
+    y0 = max(0, int(min(ys)) - pad)
+    x1 = min(image.width, int(max(xs)) + pad + 1)
+    y1 = min(image.height, int(max(ys)) + pad + 1)
     if x1 - x0 < 2 or y1 - y0 < 2:
         return None
     return image.crop((x0, y0, x1, y1))
@@ -556,6 +604,13 @@ def _first_rec_result(result) -> Optional[tuple[str, float]]:
                 continue
         pending[0:0] = list(item)
     return None
+
+
+def _quote_imbalance(text: str) -> int:
+    return sum(
+        abs(text.count(left) - text.count(right))
+        for left, right in _QUOTE_PAIRS
+    )
 
 
 def _dominant_color(pixels: np.ndarray) -> Optional[tuple[int, int, int]]:
