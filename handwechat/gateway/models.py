@@ -46,6 +46,7 @@ class IncomingMessage:
     is_latest: bool
     confidence: float
     dispatch_id: str
+    type: str = "text"
 
     @classmethod
     def from_upstream(cls, item: dict) -> "IncomingMessage":
@@ -58,6 +59,7 @@ class IncomingMessage:
             is_latest=bool(item.get("is_latest", False)),
             confidence=_as_confidence(item.get("confidence")),
             dispatch_id=uuid.uuid4().hex,
+            type=str(item.get("type") or "text"),
         )
 
     def to_payload(self) -> dict:
@@ -67,6 +69,7 @@ class IncomingMessage:
             "sender": self.sender,
             "content": self.content,
             "received_at": self.received_at,
+            "type": self.type,
             "is_latest": self.is_latest,
             "confidence": self.confidence,
         }

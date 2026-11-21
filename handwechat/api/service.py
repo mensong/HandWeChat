@@ -385,6 +385,7 @@ class ApiService:
             chat_box=calibration.chat_box,
             window_size=calibration.window_size,
             window_maximized=calibration.window_maximized,
+            palette=calibration.palette,
             on_message=self._on_ocr_message,
             on_chat_changed=self._on_ocr_chat_changed,
             on_error=self._on_ocr_error,

@@ -44,6 +44,7 @@ class MessageResponse(BaseModel):
     sender: str
     content: str
     received_at: str
+    type: str = "text"
     is_latest: bool = False
     confidence: float = 1.0
 

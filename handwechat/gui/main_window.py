@@ -145,6 +145,8 @@ class MainWindow(QMainWindow):
         self.listener_chat_label = QLabel("当前聊天：待识别")
         self.listener_type_label = QLabel("聊天类型：未知")
         self.listener_queue_label = QLabel("队列：发送 0，解析 0，截屏 0")
+        self.listener_palette_label = QLabel("底色标定：未检查")
+        self.listener_palette_label.setWordWrap(True)
         self.listener_error_label = QLabel("最近错误：无")
         self.listener_error_label.setWordWrap(True)
         for label in (
@@ -152,6 +154,7 @@ class MainWindow(QMainWindow):
             self.listener_chat_label,
             self.listener_type_label,
             self.listener_queue_label,
+            self.listener_palette_label,
             self.listener_error_label,
         ):
             layout.addWidget(label)
@@ -235,6 +238,13 @@ class MainWindow(QMainWindow):
             self._log("微信未附加，无法开始监听")
             return
         try:
+            calibration = load_ocr_calibration(self.OCR_CALIBRATION_PATH)
+        except (OSError, ValueError):
+            calibration = OcrCalibration()
+        if calibration.palette is None:
+            self._log("启动监听失败：缺少 OCR 底色标定，请先完成「OCR 区域标定」")
+            return
+        try:
             self.controller.start_listener()
         except Exception as exc:
             self._log(f"启动监听失败：{type(exc).__name__}: {exc}")
@@ -278,6 +288,16 @@ class MainWindow(QMainWindow):
         )
         last_error = status.get("last_error") or "无"
         self.listener_error_label.setText(f"最近错误：{last_error}")
+        if status.get("palette_stale"):
+            self.listener_palette_label.setText(
+                "底色标定：可能已失效（主题或背景变化），请重新标定"
+            )
+        elif status.get("palette_ready"):
+            self.listener_palette_label.setText("底色标定：正常")
+        else:
+            self.listener_palette_label.setText(
+                "底色标定：缺失，请先完成「OCR 区域标定」"
+            )
         self.history_count_label.setText(
             "历史消息：{} / {}".format(
                 status.get("history_size", 0),
@@ -423,16 +443,29 @@ class MainWindow(QMainWindow):
             calibration = load_ocr_calibration(self.OCR_CALIBRATION_PATH)
         except (OSError, ValueError) as exc:
             self.calibration_status_label.setText(
-                f"OCR 标定：读取失败，运行时将使用默认区域（{exc}）"
+                f"OCR 标定：读取失败，请重新标定（{exc}）"
             )
+            if hasattr(self, "start_button"):
+                self.start_button.setEnabled(False)
             return
+        ready = False
         if self.OCR_CALIBRATION_PATH.exists():
             updated_at = calibration.updated_at or "未知时间"
-            self.calibration_status_label.setText(
-                f"OCR 标定：已保存（{updated_at}）"
-            )
+            if calibration.palette is None:
+                self.calibration_status_label.setText(
+                    "OCR 标定：缺少底色标定，请重新标定后才能开始监听"
+                )
+            else:
+                ready = True
+                self.calibration_status_label.setText(
+                    f"OCR 标定：已保存（{updated_at}）"
+                )
         else:
-            self.calibration_status_label.setText("OCR 标定：未标定，使用内置默认区域")
+            self.calibration_status_label.setText(
+                "OCR 标定：未标定，请先完成「OCR 区域标定」"
+            )
+        if hasattr(self, "start_button"):
+            self.start_button.setEnabled(ready)
 
     def _start_ocr_calibration(self) -> None:
         if self._ocr_calibrating:

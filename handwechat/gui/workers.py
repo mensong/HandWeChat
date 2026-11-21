@@ -93,6 +93,7 @@ class WeChatController(QObject):
             chat_box=calibration.chat_box,
             window_size=calibration.window_size,
             window_maximized=calibration.window_maximized,
+            palette=calibration.palette,
             on_message=self.bridge.emit_message,
             on_chat_changed=self.bridge.emit_chat_changed,
             on_error=self.bridge.emit_error,
@@ -116,6 +117,11 @@ class WeChatController(QObject):
         return self.channel.status()
 
     def start_listener(self) -> None:
+        # Calibration may have been saved after this controller was created.
+        calibration = load_ocr_calibration(
+            app_data_path("ocr_calibration.json")
+        )
+        self.channel.set_palette(calibration.palette)
         self.runtime.start_listener()
 
     def stop_listener(self) -> None:

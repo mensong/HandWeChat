@@ -6,7 +6,7 @@ from __future__ import annotations
 import ctypes
 import time
 from dataclasses import dataclass
-from typing import Optional
+from typing import Callable, Optional
 
 from PIL import Image, ImageGrab
 from PySide6.QtCore import QPointF, QRectF, Qt
@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from handwechat.ocr_calibration import OcrCalibration
+from handwechat.ocr_calibration import OcrCalibration, OcrPalette
 
 
 @dataclass(frozen=True)
@@ -50,6 +50,27 @@ _STEPS = (
         "#257a46",
     ),
     _CalibrationStep(
+        "page_color",
+        "页面底色",
+        "color",
+        "点击聊天背景的空白处（消息之间的页面底色），避开文字与气泡。",
+        "#6b6b6b",
+    ),
+    _CalibrationStep(
+        "friend_color",
+        "对方气泡底色",
+        "color",
+        "点击对方气泡的空白处，避开文字、头像与圆角。",
+        "#a36500",
+    ),
+    _CalibrationStep(
+        "self_color",
+        "自己气泡底色",
+        "color",
+        "点击自己气泡的空白处；当前没有自己的消息时可使用「默认色」。",
+        "#0f7a7a",
+    ),
+    _CalibrationStep(
         "input_point",
         "发送输入区",
         "point",
@@ -59,9 +80,52 @@ _STEPS = (
 )
 
 
+_DEFAULT_COLORS: dict[str, tuple[int, int, int]] = {
+    "page_color": (250, 250, 250),
+    "friend_color": (238, 238, 240),
+    "self_color": (157, 242, 159),
+}
+
+
+@dataclass(frozen=True)
+class _ColorPick:
+    point: QPointF
+    rgb: tuple[int, int, int]
+    purity: float
+    defaulted: bool = False
+
+
+def _sample_color(
+    image: Image.Image, x: float, y: float, radius: int = 7
+) -> tuple[Optional[tuple[int, int, int]], float]:
+    """Most common color in a small patch around the click."""
+
+    left = max(0, int(x) - radius)
+    top = max(0, int(y) - radius)
+    right = min(image.width, int(x) + radius + 1)
+    bottom = min(image.height, int(y) + radius + 1)
+    if right - left < 2 or bottom - top < 2:
+        return None, 0.0
+    crop = image.crop((left, top, right, bottom)).convert("RGB")
+    counts = crop.getcolors(maxcolors=4096)
+    if not counts:
+        return None, 0.0
+    _, color = max(counts, key=lambda item: item[0])
+    total = crop.width * crop.height
+    # 抗锯齿边缘与文字会带来大量相近色，按容差归并后才能区分「纯色区域」与「跨边界」。
+    near = sum(
+        count
+        for count, other in counts
+        if max(abs(int(other[index]) - int(color[index])) for index in range(3))
+        <= 16
+    )
+    return (int(color[0]), int(color[1]), int(color[2])), near / total
+
+
 class _CalibrationCanvas(QLabel):
     def __init__(self, image: Image.Image, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
+        self._image = image
         self.image_width = image.width
         self.image_height = image.height
         self._pixmap = QPixmap.fromImage(
@@ -70,9 +134,13 @@ class _CalibrationCanvas(QLabel):
         self._active_key = _STEPS[0].key
         self._active_mode = _STEPS[0].mode
         self._active_index = 0
-        self._selections: dict[str, QRectF | QPointF] = {}
+        self._selections: dict[str, QRectF | QPointF | _ColorPick] = {}
         self._start: Optional[QPointF] = None
         self._current: Optional[QPointF] = None
+        self.on_color_picked: Optional[
+            Callable[[str, tuple[int, int, int], float], None]
+        ] = None
+        self.on_color_rejected: Optional[Callable[[str], None]] = None
         self.setMouseTracking(True)
         self.setCursor(Qt.CrossCursor)
         self.setPixmap(self._pixmap)
@@ -81,7 +149,7 @@ class _CalibrationCanvas(QLabel):
     def set_display_size(self, width: int, height: int) -> None:
         self.setFixedSize(width, height)
 
-    def set_selection(self, key: str, value: QRectF | QPointF | None) -> None:
+    def set_selection(self, key: str, value: QRectF | QPointF | _ColorPick | None) -> None:
         if value is None:
             self._selections.pop(key, None)
         else:
@@ -105,6 +173,12 @@ class _CalibrationCanvas(QLabel):
             return None
         return value.x() / self.image_width, value.y() / self.image_height
 
+    def selection_color(self, key: str) -> tuple[int, int, int] | None:
+        value = self._selections.get(key)
+        if not isinstance(value, _ColorPick):
+            return None
+        return value.rgb
+
     def set_step(self, step: _CalibrationStep) -> None:
         self._start = None
         self._current = None
@@ -115,7 +189,9 @@ class _CalibrationCanvas(QLabel):
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.LeftButton:
             point = self._to_image_point(event.position())
-            if self._active_mode == "point":
+            if self._active_mode == "color":
+                self._pick_color(point)
+            elif self._active_mode == "point":
                 self._selections[self._active_key] = point
                 self.update()
             else:
@@ -123,6 +199,22 @@ class _CalibrationCanvas(QLabel):
                 self._current = point
             self.update()
         super().mousePressEvent(event)
+
+    def _pick_color(self, point: QPointF) -> None:
+        chat = self._selections.get("chat_box")
+        if not isinstance(chat, QRectF) or not chat.contains(point):
+            if self.on_color_rejected:
+                self.on_color_rejected("请先框选聊天区，并在聊天区内部取色")
+            return
+        rgb, purity = _sample_color(self._image, point.x(), point.y())
+        if rgb is None or purity < 0.6:
+            if self.on_color_rejected:
+                self.on_color_rejected("该位置颜色不纯，请点击气泡或背景的空白处")
+            return
+        self._selections[self._active_key] = _ColorPick(point, rgb, purity)
+        if self.on_color_picked:
+            self.on_color_picked(self._active_key, rgb, purity)
+        self.update()
 
     def mouseMoveEvent(self, event) -> None:
         if self._start is not None and self._active_mode == "rect":
@@ -179,6 +271,13 @@ class _CalibrationCanvas(QLabel):
                     QColor(step.color),
                     4 if step.key == self._active_key else 3,
                 )
+            elif isinstance(value, _ColorPick):
+                self._draw_color_pick(
+                    painter,
+                    QPointF(value.point.x() * scale_x, value.point.y() * scale_y),
+                    QColor(*value.rgb),
+                    7 if step.key == self._active_key else 5,
+                )
 
         if self._start is not None and self._current is not None:
             box = QRectF(self._start, self._current).normalized()
@@ -206,6 +305,29 @@ class _CalibrationCanvas(QLabel):
         painter.drawEllipse(point, radius, radius)
         painter.drawLine(QPointF(point.x() - radius - 3, point.y()), QPointF(point.x() + radius + 3, point.y()))
         painter.drawLine(QPointF(point.x(), point.y() - radius - 3), QPointF(point.x(), point.y() + radius + 3))
+
+    def _draw_color_pick(
+        self, painter: QPainter, point: QPointF, color: QColor, radius: int
+    ) -> None:
+        rect = QRectF(
+            point.x() - radius,
+            point.y() - radius,
+            radius * 2,
+            radius * 2,
+        )
+        painter.fillRect(rect, color)
+        painter.setBrush(Qt.NoBrush)
+        painter.setPen(QPen(QColor(30, 30, 30), 1))
+        painter.drawRect(rect)
+        painter.setPen(QPen(QColor(255, 255, 255), 1))
+        painter.drawLine(
+            QPointF(point.x() - radius - 3, point.y()),
+            QPointF(point.x() + radius + 3, point.y()),
+        )
+        painter.drawLine(
+            QPointF(point.x(), point.y() - radius - 3),
+            QPointF(point.x(), point.y() + radius + 3),
+        )
 
 
 def _pil_image_to_qimage(image: Image.Image):
@@ -262,22 +384,29 @@ class OcrCalibrationDialog(QDialog):
         self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
         self._capture = capture
         self._image = capture.image
+        self._previous_palette = calibration.palette
         self._canvas = _CalibrationCanvas(capture.image, self)
+        self._canvas.on_color_picked = self._on_color_picked
+        self._canvas.on_color_rejected = self._on_color_rejected
         self._active_index = 0
         self._step_label = QLabel(self)
         self._hint_label = QLabel(self)
         self._hint_label.setWordWrap(True)
+        self._color_label = QLabel(self)
+        self._color_label.setWordWrap(True)
 
         self._set_initial_selections(calibration)
 
         self._previous_button = QPushButton("上一步")
         self._next_button = QPushButton("下一步")
         self._clear_button = QPushButton("清空当前")
+        self._default_button = QPushButton("使用默认色")
         self._save_button = QPushButton("保存标定")
         self._cancel_button = QPushButton("取消")
         self._previous_button.clicked.connect(self._previous_step)
         self._next_button.clicked.connect(self._next_step)
         self._clear_button.clicked.connect(self._clear_current)
+        self._default_button.clicked.connect(self._use_default_color)
         self._save_button.clicked.connect(self._save)
         self._cancel_button.clicked.connect(self.reject)
 
@@ -285,6 +414,7 @@ class OcrCalibrationDialog(QDialog):
         nav_row.addWidget(self._previous_button)
         nav_row.addWidget(self._next_button)
         nav_row.addWidget(self._clear_button)
+        nav_row.addWidget(self._default_button)
         nav_row.addStretch(1)
         nav_row.addWidget(self._save_button)
         nav_row.addWidget(self._cancel_button)
@@ -292,6 +422,7 @@ class OcrCalibrationDialog(QDialog):
         root = QVBoxLayout(self)
         root.addWidget(self._step_label)
         root.addWidget(self._hint_label)
+        root.addWidget(self._color_label)
         legend_row = QHBoxLayout()
         for step in _STEPS:
             legend_row.addWidget(_legend_item(step.title, step.color, self))
@@ -301,6 +432,7 @@ class OcrCalibrationDialog(QDialog):
 
         display_width, display_height = self._display_size()
         self._canvas.set_display_size(display_width, display_height)
+        self._update_color_label()
         self._apply_step()
 
     def showEvent(self, event) -> None:
@@ -314,6 +446,15 @@ class OcrCalibrationDialog(QDialog):
         input_point = self._canvas.selection_point("input_point")
         if not title or not chat or not input_point:
             raise ValueError("请完成全部三个标定项")
+        page = self._canvas.selection_color("page_color")
+        friend = self._canvas.selection_color("friend_color")
+        own = self._canvas.selection_color("self_color")
+        if not page or not friend or not own:
+            raise ValueError("请完成三种底色的取色（页面 / 对方气泡 / 自己气泡）")
+        palette = OcrPalette(page=page, friend=friend, own=own)
+        problem = palette.distance_problem()
+        if problem:
+            raise ValueError(problem)
         return OcrCalibration(
             input_x_ratio=input_point[0],
             input_y_ratio=input_point[1],
@@ -321,6 +462,7 @@ class OcrCalibrationDialog(QDialog):
             chat_box=chat,
             window_size=(self._capture.window_width, self._capture.window_height),
             window_maximized=self._capture.maximized,
+            palette=palette,
         )
 
     def _set_initial_selections(self, calibration: OcrCalibration) -> None:
@@ -342,6 +484,15 @@ class OcrCalibrationDialog(QDialog):
                 calibration.input_y_ratio * self._image.height,
             ),
         }
+        palette = calibration.palette
+        if palette is not None:
+            center = self._canvas._selections["chat_box"].center()
+            for key, rgb in (
+                ("page_color", palette.page),
+                ("friend_color", palette.friend),
+                ("self_color", palette.own),
+            ):
+                self._canvas._selections[key] = _ColorPick(center, rgb, 1.0)
 
     def _display_size(self) -> tuple[int, int]:
         screen = QApplication.primaryScreen()
@@ -363,9 +514,10 @@ class OcrCalibrationDialog(QDialog):
         self._step_label.setText(
             f"步骤 {self._active_index + 1} / {len(_STEPS)}：{step.title}"
         )
-        self._hint_label.setText(step.hint)
         self._canvas._active_index = self._active_index
         self._canvas.set_step(step)
+        self._default_button.setEnabled(step.mode == "color")
+        self._update_hint()
         self._previous_button.setEnabled(self._active_index > 0)
         self._next_button.setEnabled(self._active_index < len(_STEPS) - 1)
 
@@ -382,6 +534,69 @@ class OcrCalibrationDialog(QDialog):
     def _clear_current(self) -> None:
         step = _STEPS[self._active_index]
         self._canvas.set_selection(step.key, None)
+        if step.mode == "color":
+            self._update_color_label()
+            self._update_hint()
+
+    def _update_hint(self) -> None:
+        step = _STEPS[self._active_index]
+        text = step.hint
+        if step.mode == "color":
+            value = self._canvas._selections.get(step.key)
+            if isinstance(value, _ColorPick):
+                suffix = "（默认色）" if value.defaulted else ""
+                text += (
+                    f"\n当前取值：RGB{value.rgb}{suffix}，纯度 {value.purity:.0%}"
+                )
+            else:
+                text += "\n尚未取色。"
+        self._hint_label.setText(text)
+
+    def _update_color_label(self) -> None:
+        parts: list[str] = []
+        for step in _STEPS:
+            if step.mode != "color":
+                continue
+            value = self._canvas._selections.get(step.key)
+            if isinstance(value, _ColorPick):
+                suffix = "（默认色）" if value.defaulted else ""
+                parts.append(f"{step.title} {value.rgb}{suffix}")
+            else:
+                parts.append(f"{step.title} 未选")
+        self._color_label.setText("　".join(parts))
+
+    def _on_color_picked(
+        self, key: str, rgb: tuple[int, int, int], purity: float
+    ) -> None:
+        self._update_color_label()
+        self._update_hint()
+
+    def _on_color_rejected(self, message: str) -> None:
+        QMessageBox.warning(self, "OCR 区域标定", message)
+
+    def _use_default_color(self) -> None:
+        step = _STEPS[self._active_index]
+        if step.mode != "color":
+            return
+        previous = self._previous_palette
+        fallback = _DEFAULT_COLORS[step.key]
+        if previous is not None:
+            fallback = {
+                "page_color": previous.page,
+                "friend_color": previous.friend,
+                "self_color": previous.own,
+            }[step.key]
+        chat = self._canvas._selections.get("chat_box")
+        if isinstance(chat, QRectF):
+            point = chat.center()
+        else:
+            point = QPointF(self._image.width / 2, self._image.height / 2)
+        self._canvas._selections[step.key] = _ColorPick(
+            point, fallback, 1.0, defaulted=True
+        )
+        self._canvas.update()
+        self._update_color_label()
+        self._update_hint()
 
     def _save(self) -> None:
         try:

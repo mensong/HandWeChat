@@ -177,6 +177,7 @@ def _message_response(item, *, is_latest: bool = False) -> MessageResponse:
         sender=item.sender,
         content=item.content,
         received_at=item.received_at,
+        type=str(getattr(item, "type", "text")),
         is_latest=is_latest,
         confidence=(
             1.0 if is_latest else float(getattr(item, "confidence", 1.0))

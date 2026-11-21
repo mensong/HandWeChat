@@ -11,7 +11,7 @@ from handwechat.models import (
     TextMessage,
     TimeMessage,
 )
-from handwechat.ocr_calibration import OcrCalibration
+from handwechat.ocr_calibration import OcrCalibration, OcrPalette
 from handwechat.ocr_channel import OcrChannel
 from handwechat.rate_limit import TokenBucketRateLimiter
 from handwechat.runtime import WeChatRuntime
@@ -25,6 +25,7 @@ __all__ = [
     "MessageType",
     "OcrCalibration",
     "OcrChannel",
+    "OcrPalette",
     "OtherMessage",
     "SystemMessage",
     "TextMessage",

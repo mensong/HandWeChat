@@ -26,6 +26,7 @@ class BufferedMessage:
     sender: str
     content: str
     received_at: str
+    type: str = MessageType.TEXT
     is_latest: bool = False
     confidence: float = 1.0
 
@@ -49,9 +50,9 @@ class MessageBuffer:
             return self._cursor
 
     def append(self, message: BaseMessage) -> int:
-        """Buffer pure text messages and return the process-wide cursor."""
+        """Buffer text/time/system messages (OTHER stays out) with a cursor."""
 
-        if message.type != MessageType.TEXT:
+        if message.type == MessageType.OTHER:
             return self.latest_cursor
 
         with self._condition:
@@ -62,6 +63,7 @@ class MessageBuffer:
                 sender=message.sender,
                 content=message.content,
                 received_at=str(message.extra.get("listen_time") or _now_text()),
+                type=str(getattr(message, "type", MessageType.TEXT)),
                 is_latest=bool(getattr(message, "is_latest", False)),
                 confidence=float(getattr(message, "confidence", 1.0)),
             )
