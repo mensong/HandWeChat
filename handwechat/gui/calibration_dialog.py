@@ -53,21 +53,21 @@ _STEPS = (
         "page_color",
         "页面底色",
         "color",
-        "点击聊天背景的空白处（消息之间的页面底色），避开文字与气泡。",
+        "点击聊天背景的纯色处（消息之间的页面底色），取该点颜色。",
         "#6b6b6b",
     ),
     _CalibrationStep(
         "friend_color",
         "对方气泡底色",
         "color",
-        "点击对方气泡的空白处，避开文字、头像与圆角。",
+        "点击对方气泡的纯色处，取该点颜色；避开文字、头像与圆角。",
         "#a36500",
     ),
     _CalibrationStep(
         "self_color",
         "自己气泡底色",
         "color",
-        "点击自己气泡的空白处；当前没有自己的消息时可使用「默认色」。",
+        "点击自己气泡的纯色处，取该点颜色；没有自己的消息时可使用「默认色」。",
         "#0f7a7a",
     ),
     _CalibrationStep(
@@ -91,35 +91,20 @@ _DEFAULT_COLORS: dict[str, tuple[int, int, int]] = {
 class _ColorPick:
     point: QPointF
     rgb: tuple[int, int, int]
-    purity: float
     defaulted: bool = False
 
 
-def _sample_color(
-    image: Image.Image, x: float, y: float, radius: int = 7
-) -> tuple[Optional[tuple[int, int, int]], float]:
-    """Most common color in a small patch around the click."""
+def _point_color(
+    image: Image.Image, x: float, y: float
+) -> Optional[tuple[int, int, int]]:
+    """Exact pixel color at the clicked point."""
 
-    left = max(0, int(x) - radius)
-    top = max(0, int(y) - radius)
-    right = min(image.width, int(x) + radius + 1)
-    bottom = min(image.height, int(y) + radius + 1)
-    if right - left < 2 or bottom - top < 2:
-        return None, 0.0
-    crop = image.crop((left, top, right, bottom)).convert("RGB")
-    counts = crop.getcolors(maxcolors=4096)
-    if not counts:
-        return None, 0.0
-    _, color = max(counts, key=lambda item: item[0])
-    total = crop.width * crop.height
-    # 抗锯齿边缘与文字会带来大量相近色，按容差归并后才能区分「纯色区域」与「跨边界」。
-    near = sum(
-        count
-        for count, other in counts
-        if max(abs(int(other[index]) - int(color[index])) for index in range(3))
-        <= 16
-    )
-    return (int(color[0]), int(color[1]), int(color[2])), near / total
+    px = min(max(0, int(round(x))), image.width - 1)
+    py = min(max(0, int(round(y))), image.height - 1)
+    color = image.getpixel((px, py))
+    if not isinstance(color, tuple) or len(color) < 3:
+        return None
+    return (int(color[0]), int(color[1]), int(color[2]))
 
 
 class _CalibrationCanvas(QLabel):
@@ -138,7 +123,7 @@ class _CalibrationCanvas(QLabel):
         self._start: Optional[QPointF] = None
         self._current: Optional[QPointF] = None
         self.on_color_picked: Optional[
-            Callable[[str, tuple[int, int, int], float], None]
+            Callable[[str, tuple[int, int, int]], None]
         ] = None
         self.on_color_rejected: Optional[Callable[[str], None]] = None
         self.setMouseTracking(True)
@@ -206,14 +191,14 @@ class _CalibrationCanvas(QLabel):
             if self.on_color_rejected:
                 self.on_color_rejected("请先框选聊天区，并在聊天区内部取色")
             return
-        rgb, purity = _sample_color(self._image, point.x(), point.y())
-        if rgb is None or purity < 0.6:
+        rgb = _point_color(self._image, point.x(), point.y())
+        if rgb is None:
             if self.on_color_rejected:
-                self.on_color_rejected("该位置颜色不纯，请点击气泡或背景的空白处")
+                self.on_color_rejected("无法读取该点颜色，请重新点击")
             return
-        self._selections[self._active_key] = _ColorPick(point, rgb, purity)
+        self._selections[self._active_key] = _ColorPick(point, rgb)
         if self.on_color_picked:
-            self.on_color_picked(self._active_key, rgb, purity)
+            self.on_color_picked(self._active_key, rgb)
         self.update()
 
     def mouseMoveEvent(self, event) -> None:
@@ -492,7 +477,7 @@ class OcrCalibrationDialog(QDialog):
                 ("friend_color", palette.friend),
                 ("self_color", palette.own),
             ):
-                self._canvas._selections[key] = _ColorPick(center, rgb, 1.0)
+                self._canvas._selections[key] = _ColorPick(center, rgb)
 
     def _display_size(self) -> tuple[int, int]:
         screen = QApplication.primaryScreen()
@@ -545,9 +530,7 @@ class OcrCalibrationDialog(QDialog):
             value = self._canvas._selections.get(step.key)
             if isinstance(value, _ColorPick):
                 suffix = "（默认色）" if value.defaulted else ""
-                text += (
-                    f"\n当前取值：RGB{value.rgb}{suffix}，纯度 {value.purity:.0%}"
-                )
+                text += f"\n当前取色点：RGB{value.rgb}{suffix}"
             else:
                 text += "\n尚未取色。"
         self._hint_label.setText(text)
@@ -566,7 +549,7 @@ class OcrCalibrationDialog(QDialog):
         self._color_label.setText("　".join(parts))
 
     def _on_color_picked(
-        self, key: str, rgb: tuple[int, int, int], purity: float
+        self, key: str, rgb: tuple[int, int, int]
     ) -> None:
         self._update_color_label()
         self._update_hint()
@@ -592,7 +575,7 @@ class OcrCalibrationDialog(QDialog):
         else:
             point = QPointF(self._image.width / 2, self._image.height / 2)
         self._canvas._selections[step.key] = _ColorPick(
-            point, fallback, 1.0, defaulted=True
+            point, fallback, defaulted=True
         )
         self._canvas.update()
         self._update_color_label()

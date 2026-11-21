@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from collections import deque
+from collections import Counter, deque
 import ctypes
 from ctypes import wintypes
 import hashlib
@@ -67,6 +67,11 @@ _BG_PAGE = "page"
 _BG_FRIEND = "friend"
 _BG_SELF = "self"
 _BG_OTHER = "other"
+
+# 取文字框上下左右各偏移若干像素的点判底色：框内是文字，框外仍是气泡/页面背景。
+_BG_PROBE_OFFSET = 2
+_BG_PROBE_RADIUS = 1
+_BG_PROBE_MIN_VOTES = 3
 
 
 def configure_ocr_logging(log_path: str | Path) -> None:
@@ -747,6 +752,7 @@ class OcrChannel:
         window_size: Optional[tuple[int, int]] = None,
         window_maximized: bool = False,
         palette: Optional[OcrPalette] = None,
+        bg_probe_offset: int = _BG_PROBE_OFFSET,
         on_message: Optional[MessageCallback] = None,
         on_chat_changed: Optional[ChatChangedCallback] = None,
         on_error: Optional[ErrorCallback] = None,
@@ -767,6 +773,7 @@ class OcrChannel:
         self.window_maximized = bool(window_maximized)
         self.palette = palette
         self._palette_stale = False
+        self._bg_probe_offset = max(1, int(bg_probe_offset))
         self.state_path = Path(state_path)
         self._reader = get_paddle_layout_reader()
         self._capture_queue: "queue.Queue[CapturedFrame]" = queue.Queue(maxsize=8)
@@ -1294,28 +1301,52 @@ class OcrChannel:
                 max(0, line.x0):line.x1,
             ]
             color = _dominant_color(region)
-            bg = _match_palette(color, palette)
-            if bg in (_BG_FRIEND, _BG_SELF) and not self._fill_matches(
-                array, line, color
-            ):
-                bg = _BG_OTHER
+            bg = self._vote_label(self._probe_edge_labels(array, line, palette))
+            if bg is None:
+                # 投票不足（越界或平票）时回退到文字框内的众数色。
+                bg = _match_palette(color, palette)
+            if bg == _BG_PAGE:
+                color = palette.page
+            elif bg == _BG_FRIEND:
+                color = palette.friend
+            elif bg == _BG_SELF:
+                color = palette.own
             labeled.append(replace(line, bg=bg, bg_color=color))
         return labeled
 
-    def _fill_matches(
-        self,
-        array: np.ndarray,
-        line: OcrLine,
-        color: Optional[tuple[int, int, int]],
-    ) -> bool:
-        """The area around the text must be filled with the same color."""
+    def _probe_edge_labels(
+        self, array: np.ndarray, line: OcrLine, palette: OcrPalette
+    ) -> list[str]:
+        """Sample the four points just outside the text box, where only background remains."""
 
-        pad = max(4, int(round(0.8 * line.height)))
-        region = array[
-            max(0, line.y0 - pad):line.y1 + pad,
-            max(0, line.x0 - pad):line.x1 + pad,
-        ]
-        return _color_close(_dominant_color(region), color)
+        offset = getattr(self, "_bg_probe_offset", _BG_PROBE_OFFSET)
+        center_x = (line.x0 + line.x1) // 2
+        center_y = (line.y0 + line.y1) // 2
+        points = (
+            (center_x, line.y0 - offset),
+            (center_x, line.y1 + offset),
+            (line.x0 - offset, center_y),
+            (line.x1 + offset, center_y),
+        )
+        height, width = array.shape[:2]
+        labels: list[str] = []
+        for x, y in points:
+            if x < 0 or y < 0 or x >= width or y >= height:
+                continue
+            radius = _BG_PROBE_RADIUS
+            patch = array[
+                max(0, y - radius):y + radius + 1,
+                max(0, x - radius):x + radius + 1,
+            ]
+            labels.append(_match_palette(_dominant_color(patch), palette))
+        return labels
+
+    @staticmethod
+    def _vote_label(labels: Sequence[str]) -> Optional[str]:
+        if not labels:
+            return None
+        label, count = Counter(labels).most_common(1)[0]
+        return label if count >= _BG_PROBE_MIN_VOTES else None
 
     def _merge_visual_rows(self, lines: Sequence[OcrLine]) -> list[OcrLine]:
         merged: list[OcrLine] = []
