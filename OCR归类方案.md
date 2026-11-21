@@ -216,6 +216,7 @@ OCR 通道从聊天截图中只能拿到「文字 + 坐标」。当前 `_parse_c
 - `score` 取气泡各行平均分（沿用现有字段）；
 - 时间戳输出 `TIME` 消息，居中的系统提示输出 `SYSTEM` 消息；其余 `PAGE` 行（昵称）与 `OTHER` 行不产生消息；
 - 时间/系统消息同样进入 API 消息缓冲区与网关消息流；`MessageResponse`、`IncomingMessage` 与应用 payload 新增 `type` 字段（`text` / `time` / `system`），`/api/v1/ws/messages` 与 HTTP 消息接口都会返回；
+- `api_requests.log` 中记录的消息与响应结构一致（含 `id` / `type` / `is_latest` / `confidence`）；`content` 超过 200 字符时截断并标记 `truncated`；
 - 气泡消息与时间/系统消息按 y 坐标合并排序；
 - `_consume_frame` 按 attr 分别构造 `TextMessage` / `TimeMessage` / `SystemMessage`；
 - 己方消息仍由 `_consume_frame` 统一过滤，行为不变。
@@ -235,6 +236,7 @@ OCR 通道从聊天截图中只能拿到「文字 + 坐标」。当前 `_parse_c
 | OCR 检测长边上限 | 1920 px | `det_limit_side_len`，避免放大后的截图被压回 960 |
 | OCR 检测框阈值 | 0.3 | `det_db_box_thresh` |
 | OCR 识别丢弃阈值 | 0.1 | `drop_score`，保留低分单字交给二次识别 |
+| 发送后静默期 | 0.5 s | `_SEND_SETTLE_DELAY`，期间继续暂停截图 |
 | 取色邻域 | 15 × 15 px | 点击取色 |
 | 取色纯度下限 | 60% | 低于则拒绝该次取色 |
 | 页面 ↔ 对方距离下限 | 8 | 保存前校验 |
@@ -256,6 +258,15 @@ OCR 通道从聊天截图中只能拿到「文字 + 坐标」。当前 `_parse_c
 | 右侧判定 | `x1 >= 0.75 × 宽度` | 自己 |
 | 左侧判定 | `x0 <= 0.35 × 宽度` | 对方 |
 
+### 4.11 截图与发送互斥
+
+发送期间（含 @ 提及浮层、图片预览、发送后静默期）暂停截图：截图循环用非阻塞方式获取发送锁，拿不到锁就跳过本轮，不抓帧、不入队。
+
+原因是回复带 `@` 时，成员选择浮层会遮住消息区底部的最新消息，此时抓到的帧只识别到露出的半截文本，会被当成新消息重复上报；发送结束后再静默 0.5s，等浮层收起和气泡动画结束。
+
+- 静默期：`_SEND_SETTLE_DELAY = 0.5s`
+- 发送本身不受影响；发送期间的新消息最多延迟一个轮询周期被发现。
+
 ## 5. 数据结构与代码改动
 
 | 文件 | 改动 |
@@ -263,7 +274,7 @@ OCR 通道从聊天截图中只能拿到「文字 + 坐标」。当前 `_parse_c
 | `handwechat/ocr_calibration.py` | `OcrCalibration` 增加 `palette`（page/friend/self）；JSON 版本升到 3；`from_dict` 缺失时返回空；保存前两两距离校验 |
 | `handwechat/gui/calibration_dialog.py` | 新增 3 个取色步骤、`color` 模式、15 × 15 邻域取色、色块与 RGB 预览、「默认色」按钮、保存校验 |
 | `handwechat/gui/main_window.py` | 标定状态显示是否缺少底色；缺少 palette 时禁用开始监听并提示 |
-| `handwechat/ocr_channel.py` | 构造函数接收 `palette`；删除自动估计；按调色板分类；失效检测；输出 TIME/SYSTEM 消息；放宽 PaddleOCR 检测参数；旧聚类保留为 `_parse_chat_lines_legacy` |
+| `handwechat/ocr_channel.py` | 构造函数接收 `palette`；删除自动估计；按调色板分类；失效检测；输出 TIME/SYSTEM 消息；放宽 PaddleOCR 检测参数；发送期间暂停截图；旧聚类保留为 `_parse_chat_lines_legacy` |
 | `handwechat/api/service.py` | 透传 palette；缺少 palette 时启动 OCR 报明确错误 |
 | `handwechat/api/message_buffer.py` | 只排除 `OTHER`；`text` / `time` / `system` 全部进入缓冲，`BufferedMessage` 增加 `type` |
 | `handwechat/api/models.py`、`handwechat/api/app.py` | `MessageResponse` 增加 `type` |

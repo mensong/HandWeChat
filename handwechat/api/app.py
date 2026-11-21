@@ -111,14 +111,13 @@ def _is_diagnostic_path(path: str) -> bool:
 
 def _log_items(items) -> list[dict]:
     records = []
-    for item in items:
+    total = len(items)
+    for index, item in enumerate(items):
         content = str(item.content)
-        record = {
-            "cursor": item.cursor,
-            "sender": item.sender,
-            "content": content[:_MAX_LOG_CONTENT],
-            "received_at": item.received_at,
-        }
+        record = _message_response(
+            item, is_latest=index == total - 1
+        ).model_dump()
+        record["content"] = content[:_MAX_LOG_CONTENT]
         if len(content) > _MAX_LOG_CONTENT:
             record["truncated"] = True
         records.append(record)

@@ -51,6 +51,8 @@ _MENTION_PICKER_DELAY = 0.3
 _MENTION_FILTER_DELAY = 0.5
 _MENTION_SELECT_DELAY = 0.2
 _IMAGE_PREVIEW_DELAY = 1.0
+# 发送结束后等 UI 稳定（浮层收起、气泡动画）再恢复截图。
+_SEND_SETTLE_DELAY = 0.5
 
 # 小字号的短文本（数字、单字）检测框常常偏松，rec 会给出 ">"、"1" 这类误识，
 # 且不一定低分；短文本分数不够高就按墨迹紧裁后再识别一次，取更有把握的结果。
@@ -969,99 +971,108 @@ class OcrChannel:
         if payload.image_path is not None and not payload.image_path.is_file():
             raise ValueError(f"图片不存在：{payload.image_path}")
         with self._send_lock:
-            rect = self._confirm_chat()
-            self._click_input(rect)
-            self._assert_wechat_foreground()
-            self._clear_input()
-            for kind, value in split_mentions(payload.text):
-                if kind == "mention":
-                    self._type_mention(value)
-                else:
-                    self._paste_text(value)
-            if payload.image_path is not None:
-                self._paste_image(payload.image_path)
-                time.sleep(_IMAGE_PREVIEW_DELAY)
-            time.sleep(0.15)
-            self._press_send_shortcut()
-            return True
+            try:
+                rect = self._confirm_chat()
+                self._click_input(rect)
+                self._assert_wechat_foreground()
+                self._clear_input()
+                for kind, value in split_mentions(payload.text):
+                    if kind == "mention":
+                        self._type_mention(value)
+                    else:
+                        self._paste_text(value)
+                if payload.image_path is not None:
+                    self._paste_image(payload.image_path)
+                    time.sleep(_IMAGE_PREVIEW_DELAY)
+                time.sleep(0.15)
+                self._press_send_shortcut()
+                return True
+            finally:
+                # 无论成功失败都留出 UI 稳定时间，期间截图保持暂停。
+                time.sleep(_SEND_SETTLE_DELAY)
 
     def _capture_loop(self) -> None:
         while not self._stop_event.is_set():
-            try:
-                located = _find_wechat_window()
-            except Exception as exc:
-                self._report_error("OCR 窗口定位", exc)
-                self._stop_event.wait(self.poll_interval)
-                continue
-            if located is None:
-                self._set_status_error("未找到微信主窗口")
-                self._stop_event.wait(self.poll_interval)
-                continue
-            hwnd, (left, top, right, bottom) = located
-            try:
-                if self._restore_window_size(hwnd):
-                    located = _find_wechat_window()
-                    if located is None:
-                        self._set_status_error("恢复窗口尺寸后未找到微信主窗口")
-                        self._stop_event.wait(self.poll_interval)
-                        continue
-                    hwnd, (left, top, right, bottom) = located
-            except Exception as exc:
-                self._report_error("OCR 恢复窗口尺寸", exc)
-            if right <= left or bottom <= top:
-                self._set_status_error("微信窗口尺寸无效")
+            # 发送期间不抓帧：@ 提及浮层会遮住最新消息，抓到半截会造成误报。
+            if not self._send_lock.acquire(blocking=False):
                 self._stop_event.wait(self.poll_interval)
                 continue
             try:
-                temporary_topmost = self._bring_window_to_front(hwnd)
-                try:
-                    image = ImageGrab.grab(
-                        bbox=(left, top, right, bottom), all_screens=True
-                    )
-                finally:
-                    if temporary_topmost:
-                        self._release_window_front(hwnd)
-                width, height = image.size
-                title_box = _crop_box(
-                    (width, height),
-                    left=self.title_box[0],
-                    top=self.title_box[1],
-                    right=self.title_box[2],
-                    bottom=self.title_box[3],
-                )
-                chat_box = _crop_box(
-                    (width, height),
-                    left=self.chat_box[0],
-                    top=self.chat_box[1],
-                    right=self.chat_box[2],
-                    bottom=self.chat_box[3],
-                )
-                signature = _frame_signature(image, title_box, chat_box)
-                self._set_last_frame_signature(signature)
-                if signature == self._last_accepted_signature:
-                    self._increment_ocr_skip_count()
-                    self._stop_event.wait(self.poll_interval)
-                    continue
-                frame = CapturedFrame(
-                    hwnd=hwnd,
-                    left=left,
-                    top=top,
-                    right=right,
-                    bottom=bottom,
-                    captured_at=time.time(),
-                    image=image,
-                    signature=signature,
-                )
-                # A bounded put intentionally back-pressures capture when OCR is slow.
-                while not self._stop_event.is_set():
-                    try:
-                        self._capture_queue.put(frame, timeout=0.5)
-                        break
-                    except queue.Full:
-                        continue
-            except Exception as exc:
-                self._report_error("OCR 截屏", exc)
+                self._capture_frame_once()
+            finally:
+                self._send_lock.release()
             self._stop_event.wait(self.poll_interval)
+
+    def _capture_frame_once(self) -> None:
+        try:
+            located = _find_wechat_window()
+        except Exception as exc:
+            self._report_error("OCR 窗口定位", exc)
+            return
+        if located is None:
+            self._set_status_error("未找到微信主窗口")
+            return
+        hwnd, (left, top, right, bottom) = located
+        try:
+            if self._restore_window_size(hwnd):
+                located = _find_wechat_window()
+                if located is None:
+                    self._set_status_error("恢复窗口尺寸后未找到微信主窗口")
+                    return
+                hwnd, (left, top, right, bottom) = located
+        except Exception as exc:
+            self._report_error("OCR 恢复窗口尺寸", exc)
+        if right <= left or bottom <= top:
+            self._set_status_error("微信窗口尺寸无效")
+            return
+        try:
+            temporary_topmost = self._bring_window_to_front(hwnd)
+            try:
+                image = ImageGrab.grab(
+                    bbox=(left, top, right, bottom), all_screens=True
+                )
+            finally:
+                if temporary_topmost:
+                    self._release_window_front(hwnd)
+            width, height = image.size
+            title_box = _crop_box(
+                (width, height),
+                left=self.title_box[0],
+                top=self.title_box[1],
+                right=self.title_box[2],
+                bottom=self.title_box[3],
+            )
+            chat_box = _crop_box(
+                (width, height),
+                left=self.chat_box[0],
+                top=self.chat_box[1],
+                right=self.chat_box[2],
+                bottom=self.chat_box[3],
+            )
+            signature = _frame_signature(image, title_box, chat_box)
+            self._set_last_frame_signature(signature)
+            if signature == self._last_accepted_signature:
+                self._increment_ocr_skip_count()
+                return
+            frame = CapturedFrame(
+                hwnd=hwnd,
+                left=left,
+                top=top,
+                right=right,
+                bottom=bottom,
+                captured_at=time.time(),
+                image=image,
+                signature=signature,
+            )
+            # A bounded put intentionally back-pressures capture when OCR is slow.
+            while not self._stop_event.is_set():
+                try:
+                    self._capture_queue.put(frame, timeout=0.5)
+                    break
+                except queue.Full:
+                    continue
+        except Exception as exc:
+            self._report_error("OCR 截屏", exc)
 
     def _ocr_loop(self) -> None:
         while not self._stop_event.is_set():
