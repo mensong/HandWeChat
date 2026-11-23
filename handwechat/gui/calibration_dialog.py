@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from handwechat.ocr_calibration import OcrCalibration, OcrPalette
+from handwechat.ocr_calibration import DEFAULT_PALETTE, OcrCalibration, OcrPalette
 
 
 @dataclass(frozen=True)
@@ -81,9 +81,9 @@ _STEPS = (
 
 
 _DEFAULT_COLORS: dict[str, tuple[int, int, int]] = {
-    "page_color": (250, 250, 250),
-    "friend_color": (238, 238, 240),
-    "self_color": (157, 242, 159),
+    "page_color": DEFAULT_PALETTE.page,
+    "friend_color": DEFAULT_PALETTE.friend,
+    "self_color": DEFAULT_PALETTE.own,
 }
 
 

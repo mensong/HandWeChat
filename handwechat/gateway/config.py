@@ -21,6 +21,7 @@ class GatewayAppConfig:
     timeout_ms: int = 800
     hold_seconds: float = 120.0
     enabled: bool = True
+    can_rewrite: bool = False
     groups: list[str] = field(default_factory=list)
     rules: list[dict] | None = None
 
@@ -46,6 +47,11 @@ class GatewayConfig:
     send_result_timeout_seconds: float = 30.0
     log_dir: str = "data/logs"
     gateway_log_file: str = "gateway.log"
+    max_response_items: int = 20
+    max_response_text: int = 2000
+    max_response_images: int = 5
+    max_response_image_bytes: int = 1024 * 1024
+    max_response_total_bytes: int = 5 * 1024 * 1024
     apps: list[GatewayAppConfig] = field(default_factory=list)
 
     @classmethod
@@ -109,6 +115,27 @@ class GatewayConfig:
             ),
             log_dir=str(data.get("log_dir") or "data/logs"),
             gateway_log_file=str(data.get("gateway_log_file") or "gateway.log"),
+            max_response_items=max(
+                1, _as_int(data.get("max_response_items"), 20)
+            ),
+            max_response_text=max(
+                1, _as_int(data.get("max_response_text"), 2000)
+            ),
+            max_response_images=max(
+                0, _as_int(data.get("max_response_images"), 5)
+            ),
+            max_response_image_bytes=max(
+                1,
+                _as_int(
+                    data.get("max_response_image_bytes"), 1024 * 1024
+                ),
+            ),
+            max_response_total_bytes=max(
+                0,
+                _as_int(
+                    data.get("max_response_total_bytes"), 5 * 1024 * 1024
+                ),
+            ),
             apps=apps,
         )
         config.validate()
@@ -151,6 +178,7 @@ def _parse_app(data: dict) -> GatewayAppConfig:
         timeout_ms=max(50, _as_int(data.get("timeout_ms"), 800)),
         hold_seconds=max(0.0, _as_float(data.get("hold_seconds"), 120.0)),
         enabled=bool(data.get("enabled", True)),
+        can_rewrite=bool(data.get("can_rewrite", False)),
         groups=_parse_groups(data.get("groups")),
         rules=_parse_config_rules(data),
     )

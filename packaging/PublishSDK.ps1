@@ -60,29 +60,16 @@ $sourceDir = Join-Path $root "handwechat\gateway"
 Copy-Item -LiteralPath (Join-Path $sourceDir "client.py") -Destination $packageDir
 Copy-Item -LiteralPath (Join-Path $sourceDir "protocol.py") -Destination $packageDir
 
-$clientPath = Join-Path $packageDir "client.py"
-$clientText = [IO.File]::ReadAllText($clientPath, $utf8)
-$oldImport = "from handwechat.gateway.protocol import Decision"
-$newImport = "from .protocol import Decision"
-if (-not $clientText.Contains($oldImport)) {
-    throw "Decision import not found in client.py; update PublishSDK.ps1."
-}
-[IO.File]::WriteAllText(
-    $clientPath,
-    $clientText.Replace($oldImport, $newImport),
-    $utf8
-)
-
 $initLines = @(
     "# -*- coding: utf-8 -*-",
     '"""HandWeChat message gateway consumer SDK."""',
     "",
     "from $packageName.client import GatewayClient, Offer, PinInfo, GatewayContext, SendResult, ChatInfo",
-    "from $packageName.protocol import Decision",
+    "from $packageName.protocol import Decision, ResponseImage, ResponseItem, PROTOCOL_VERSION",
     "",
     ('__version__ = "' + $Version + '"'),
     "",
-    '__all__ = ["GatewayClient", "Offer", "PinInfo", "GatewayContext", "SendResult", "ChatInfo", "Decision"]',
+    '__all__ = ["GatewayClient", "Offer", "PinInfo", "GatewayContext", "SendResult", "ChatInfo", "Decision", "ResponseImage", "ResponseItem", "PROTOCOL_VERSION"]',
     ""
 )
 [IO.File]::WriteAllText(
@@ -113,26 +100,26 @@ packages = ["$packageName"]
     $utf8
 )
 
-$readme = @"
-# $distributionName
+$readme = @'
+# __DIST__
 
 Consumer SDK for the HandWeChat message gateway.
 
 ## Install
 
-    pip install $distributionName
+    pip install __DIST__
 
 ## Usage
 
     import asyncio
 
-    from $packageName import GatewayClient, Offer, Decision
+    from __PKG__ import GatewayClient, Offer, Decision, ResponseItem
 
 
     def on_offer(offer: Offer) -> Decision:
         if offer.content == "hello":
-            return Decision.consume("hi")
-        return Decision.skip()
+            return Decision.consume(response=[ResponseItem.new(text="hi")])
+        return Decision.rewrite()
 
 
     async def main() -> None:
@@ -149,17 +136,23 @@ Consumer SDK for the HandWeChat message gateway.
 
     asyncio.run(main())
 
+The client sends `protocol: 2` in the hello frame. Gateways older than
+protocol 2 close the connection with code 4400, and applications on the old
+`skip` / `reply` API must be upgraded (see the gateway protocol upgrade notes
+in the HandWeChat repository).
+
 Rules are declared in the hello frame:
 
     rules = [
         {"keywords": ["checkin", "report"]},             # any substring
-        {"regex": "^\\d{1,3}`$", "chat_types": ["group"]}, # AND inside one rule
+        {"regex": "^\\d{1,3}$", "chat_types": ["group"]}, # AND inside one rule
     ]
 
 Rules within one item are ANDed; items are ORed. Omit `rules` to keep the
 legacy match-all cascade; pass `rules=[]` to declare a generic bot.
 See the gateway application guide in the HandWeChat repository for the full protocol.
-"@
+'@
+$readme = $readme.Replace("__DIST__", $distributionName).Replace("__PKG__", $packageName)
 [IO.File]::WriteAllText(
     (Join-Path $sdkRoot "README.md"),
     $readme + "`r`n",

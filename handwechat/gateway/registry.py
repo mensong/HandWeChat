@@ -22,7 +22,7 @@ class AppRuntime:
     last_error: str | None = None
     offers: int = 0
     consumes: int = 0
-    skips: int = 0
+    rewrites: int = 0
     timeouts: int = 0
 
     @property

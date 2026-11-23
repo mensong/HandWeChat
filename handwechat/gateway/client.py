@@ -14,13 +14,17 @@ from typing import Any, Callable, Optional
 import websockets
 from websockets.exceptions import ConnectionClosed
 
-from handwechat.gateway.protocol import Decision
+from .protocol import (
+    PROTOCOL_VERSION,
+    Decision,
+    ResponseItem,
+)
 
 DEFAULT_URL = "ws://127.0.0.1:8100/api/v1/gateway/ws/app"
 
 _TERMINAL_CLOSE_CODES = {
     4009: "连接被同一应用的新连接替换",
-    4400: "握手帧非法",
+    4400: "握手帧非法或协议版本不匹配",
     4401: "token 不匹配",
     4404: "应用未注册或已禁用",
 }
@@ -54,6 +58,7 @@ class Offer:
     content: str
     sender: str
     message: dict
+    response: tuple[ResponseItem, ...] = ()
 
     @property
     def message_id(self) -> str:
@@ -68,11 +73,24 @@ class Offer:
         value = self.message.get("confidence")
         return 1.0 if value is None else float(value)
 
+    @property
+    def extra(self) -> dict:
+        value = self.message.get("extra")
+        return value if isinstance(value, dict) else {}
+
     @classmethod
     def from_payload(cls, payload: dict) -> "Offer":
         message = payload.get("message")
         if not isinstance(message, dict):
             message = {}
+        response: list[ResponseItem] = []
+        raw_response = payload.get("response")
+        if isinstance(raw_response, list):
+            for item in raw_response:
+                try:
+                    response.append(ResponseItem.from_offer(item))
+                except ValueError:
+                    continue
         return cls(
             offer_id=str(payload.get("offer_id") or ""),
             dispatch_id=str(payload.get("dispatch_id") or ""),
@@ -82,6 +100,7 @@ class Offer:
             content=str(message.get("content") or ""),
             sender=str(message.get("sender") or ""),
             message=message,
+            response=tuple(response),
         )
 
 
@@ -140,6 +159,8 @@ class SendResult:
     offer_id: str = ""
     request_id: str = ""
     dispatch_id: str = ""
+    part_index: int = 0
+    part_count: int = 1
     status: str = ""
     ok: bool = False
     final: bool = False
@@ -154,6 +175,8 @@ class SendResult:
             offer_id=str(data.get("offer_id") or ""),
             request_id=str(data.get("request_id") or ""),
             dispatch_id=str(data.get("dispatch_id") or ""),
+            part_index=int(data.get("part_index") or 0),
+            part_count=int(data.get("part_count") or 1),
             status=str(data.get("status") or ""),
             ok=bool(data.get("ok", False)),
             final=bool(data.get("final", False)),
@@ -170,8 +193,8 @@ StateHandler = Callable[[GatewayContext], Any]
 class GatewayClient:
     """自动重连、自动回 decision 的消费应用客户端。
 
-    on_offer 可以返回 Decision、dict 或 None；None 和异常都按 skip 处理，
-    保证一个处理失误不会让整条链路卡住。
+    on_offer 可以返回 Decision、dict 或 None；None 和异常都按无改动
+    rewrite 处理，保证一个处理失误不会让整条链路卡住。
     """
 
     def __init__(
@@ -283,6 +306,7 @@ class GatewayClient:
             hello = {
                 "type": "hello",
                 "app_id": self.app_id,
+                "protocol": PROTOCOL_VERSION,
                 "token": self.token,
             }
             if self.rules is not None:
@@ -297,6 +321,10 @@ class GatewayClient:
                 first = {}
             if first.get("type") != "welcome":
                 raise GatewayClientError(f"握手失败：{first!r}")
+            if str(first.get("protocol")) != str(PROTOCOL_VERSION):
+                raise GatewayAuthError(
+                    "网关协议版本不匹配，请升级网关到 protocol 2"
+                )
 
             self.connected = True
             self.pin = _pin_from(first.get("pin"))
@@ -350,7 +378,7 @@ class GatewayClient:
 
     async def _handle_offer(self, payload: dict) -> None:
         offer = Offer.from_payload(payload)
-        decision = Decision.skip()
+        decision = Decision.rewrite()
         try:
             result = None
             if self.on_offer is not None:
@@ -364,14 +392,14 @@ class GatewayClient:
             elif result is not None:
                 raise TypeError(f"on_offer 返回了不支持的类型：{type(result).__name__}")
         except Exception:
-            self.logger.exception("处理 offer 失败，按 skip 返回")
-            decision = Decision.skip()
+            self.logger.exception("处理 offer 失败，按无改动 rewrite 返回")
+            decision = Decision.rewrite()
 
         await self._send(
             {
                 "type": "decision",
                 "offer_id": offer.offer_id,
-                **_decision_payload(decision),
+                **decision.to_payload(),
             }
         )
 
@@ -404,21 +432,6 @@ def _pin_from(payload) -> Optional[PinInfo]:
         expires_at=payload.get("expires_at"),
         hold_seconds=float(hold) if hold is not None else None,
     )
-
-
-def _decision_payload(decision: Decision) -> dict:
-    payload = {"action": decision.action}
-    if decision.reply is not None:
-        payload["reply"] = decision.reply
-    if decision.reply_image is not None:
-        payload["reply_image"] = decision.reply_image
-    if decision.pin is not None:
-        payload["pin"] = decision.pin
-    if decision.hold_seconds is not None:
-        payload["hold_seconds"] = decision.hold_seconds
-    if decision.state is not None:
-        payload["state"] = decision.state
-    return payload
 
 
 def _close_code(exc: ConnectionClosed) -> Optional[int]:

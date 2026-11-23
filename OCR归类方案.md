@@ -57,7 +57,7 @@ OCR 通道从聊天截图中只能拿到「文字 + 坐标」。当前 `_parse_c
 ```
 聊天区图像
    │
-   ├─ 0. 读取标定调色板（page / friend / self）──缺失──► 拒绝启动并提示重新标定
+   ├─ 0. 读取标定调色板（page / friend / self）──缺失──► 使用内置默认调色板
    │
    ├─ 1. 每行底色分类（PAGE / FRIEND / SELF / OTHER）
    │
@@ -110,8 +110,8 @@ OCR 通道从聊天截图中只能拿到「文字 + 坐标」。当前 `_parse_c
 }
 ```
 
-- `from_dict` 对缺失 palette 返回空值；
-- **未标定、或标定文件没有 palette 时，启动监听直接提示「请先完成底色标定」并拒绝启动**，不再退回默认区域或自动估计。
+- `from_dict` 对缺失 palette 使用内置默认调色板（`DEFAULT_PALETTE`，即上表三色）；
+- 标定文件缺失、或标定文件没有 palette 时，按默认调色板启动监听；实际底色与默认值不符时由「标定失效检测」提示重新标定。
 
 **运行期匹配**
 
@@ -227,7 +227,7 @@ OCR 通道从聊天截图中只能拿到「文字 + 坐标」。当前 `_parse_c
 
 ### 4.9 回退策略
 
-- **标定缺失**：启动阶段直接拒绝启动并提示重新标定，不存在运行期回退；
+- **标定缺失**：使用内置默认调色板启动，不做区域或颜色估计；实际底色不符时由「调色板失效」检测提示重新标定；
 - **调色板失效**：某帧有 ≥ 3 行文字但命中率 < 20%，该帧走旧实现，日志记 `palette_stale=1`；
 - **采样异常**：该帧走旧实现。
 
@@ -278,11 +278,11 @@ OCR 通道从聊天截图中只能拿到「文字 + 坐标」。当前 `_parse_c
 
 | 文件 | 改动 |
 | --- | --- |
-| `handwechat/ocr_calibration.py` | `OcrCalibration` 增加 `palette`（page/friend/self）；JSON 版本升到 3；`from_dict` 缺失时返回空；保存前两两距离校验 |
+| `handwechat/ocr_calibration.py` | `OcrCalibration` 增加 `palette`（page/friend/self）；JSON 版本升到 3；`from_dict` 缺失时使用内置默认调色板；保存前两两距离校验 |
 | `handwechat/gui/calibration_dialog.py` | 新增 3 个取色步骤、`color` 模式、单像素取色、色块与 RGB 预览、「默认色」按钮、保存校验 |
-| `handwechat/gui/main_window.py` | 标定状态显示是否缺少底色；缺少 palette 时禁用开始监听并提示 |
+| `handwechat/gui/main_window.py` | 标定状态显示调色板正常/失效 |
 | `handwechat/ocr_channel.py` | 构造函数接收 `palette`；四点投票判底色（`bg_probe_offset` 可配置）；引号不平衡时 rec-only 复核；失效检测；输出 TIME/SYSTEM 消息；放宽 PaddleOCR 检测参数；发送期间暂停截图；旧聚类保留为 `_parse_chat_lines_legacy` |
-| `handwechat/api/service.py` | 透传 palette；缺少 palette 时启动 OCR 报明确错误 |
+| `handwechat/api/service.py` | 透传 palette |
 | `handwechat/api/message_buffer.py` | 只排除 `OTHER`；`text` / `time` / `system` 全部进入缓冲，`BufferedMessage` 增加 `type` |
 | `handwechat/api/models.py`、`handwechat/api/app.py` | `MessageResponse` 增加 `type` |
 | `handwechat/gateway/models.py` | `IncomingMessage` 增加 `type`，并透传到应用 payload |

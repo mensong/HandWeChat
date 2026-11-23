@@ -15,10 +15,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import uvicorn
 from fastapi import FastAPI, WebSocket
+from websockets.exceptions import ConnectionClosed
 
 from handwechat.gateway.api import create_app
 from handwechat.gateway.client import GatewayClient, Offer
 from handwechat.gateway.config import GatewayAppConfig, GatewayConfig
+
+import websockets
 
 
 def free_port() -> int:
@@ -167,6 +170,23 @@ async def wait_health_ready(port: int) -> None:
     raise RuntimeError("网关未能读取上游健康状态")
 
 
+async def check_protocol_reject(port: int) -> None:
+    async with websockets.connect(
+        f"ws://127.0.0.1:{port}/api/v1/gateway/ws/app"
+    ) as socket:
+        await socket.send(
+            json.dumps({"type": "hello", "app_id": "checkin", "token": "t"})
+        )
+        try:
+            await socket.recv()
+        except ConnectionClosed as exc:
+            code = getattr(getattr(exc, "rcvd", None), "code", None)
+            assert code == 4400, code
+            stage("old protocol rejected with 4400")
+            return
+    raise AssertionError("缺少 protocol 的 hello 未被拒绝")
+
+
 async def wait_until(predicate, label: str, timeout: float = 5.0) -> None:
     for _ in range(int(timeout / 0.05)):
         if predicate():
@@ -200,9 +220,10 @@ async def consumer(
                 "content": offer.content,
                 "pinned": offer.pinned,
                 "dispatch_id": offer.dispatch_id,
+                "response_ids": [item.id for item in offer.response],
             }
         )
-        return decide(app_id, offer.content)
+        return decide(app_id, offer)
 
     def on_connected(_pin) -> None:
         client = holder.get("client")
@@ -256,6 +277,9 @@ async def main() -> None:
                 send_result_timeout_seconds=5,
                 log_dir=tmp,
                 apps=[
+                    GatewayAppConfig(
+                        id="fixer", priority=5, token="t", can_rewrite=True
+                    ),
                     GatewayAppConfig(id="checkin", priority=10, token="t"),
                     GatewayAppConfig(
                         id="game", priority=100, token="t", hold_seconds=60
@@ -276,6 +300,7 @@ async def main() -> None:
             await wait_started(gateway_server, "gateway")
             await wait_upstream_connected(gateway_port)
             await wait_health_ready(gateway_port)
+            await check_protocol_reject(gateway_port)
 
             observed: list[dict] = []
             send_results: list = []
@@ -283,7 +308,17 @@ async def main() -> None:
             states: list = []
             welcomes: dict = {}
 
-            def decide(app_id: str, content: str) -> dict:
+            def decide(app_id: str, offer) -> dict:
+                content = offer.content
+                existing = [{"id": item.id} for item in offer.response]
+                if app_id == "fixer":
+                    if content == "签 到":
+                        return {
+                            "action": "rewrite",
+                            "content": "42",
+                            "response": [{"text": "已归一"}],
+                        }
+                    return {"action": "rewrite"}
                 if app_id == "game":
                     if content == "开始数字游戏":
                         return {
@@ -291,24 +326,45 @@ async def main() -> None:
                             "pin": True,
                             "hold_seconds": 60,
                             "state": "playing",
-                            "reply": "游戏开始",
+                            "response": existing + [{"text": "游戏开始"}],
                         }
-                    return {"action": "skip"}
+                    return {"action": "rewrite"}
                 if app_id == "checkin":
                     if content == "42":
-                        return {"action": "consume", "reply": "签到成功"}
-                    return {"action": "skip"}
+                        return {
+                            "action": "consume",
+                            "response": existing + [{"text": "签到成功"}],
+                        }
+                    return {"action": "rewrite"}
                 if app_id == "bot":
-                    return {"action": "consume", "reply": "bot"}
-                return {"action": "skip"}
+                    return {
+                        "action": "consume",
+                        "response": existing + [{"text": "bot"}],
+                    }
+                return {"action": "rewrite"}
 
             clients: dict[str, GatewayClient] = {}
             rules = {
+                "fixer": [{"keywords": ["签"]}],
                 "checkin": [{"keywords": ["42"]}],
                 "game": [{"keywords": ["开始数字游戏"]}],
                 "bot": [],
             }
             consumers = [
+                asyncio.create_task(
+                    consumer(
+                        "fixer",
+                        gateway_port,
+                        rules["fixer"],
+                        decide,
+                        observed,
+                        clients,
+                        send_results,
+                        chat_changes,
+                        states,
+                        welcomes,
+                    )
+                ),
                 asyncio.create_task(
                     consumer(
                         "checkin",
@@ -353,7 +409,7 @@ async def main() -> None:
                 ),
             ]
             await wait_until(
-                lambda: len(clients) == 3 and len(welcomes) == 3,
+                lambda: len(clients) == 4 and len(welcomes) == 4,
                 "应用全部握手",
             )
             stage("consumers connected")
@@ -368,7 +424,7 @@ async def main() -> None:
                 {"type": "messages", "items": [item(2, "42")]}
             )
             await wait_sent(upstream, ["游戏开始", "签到成功"])
-            stage("message 2: pinned game skipped, checkin consumed")
+            stage("message 2: pinned game rewrote, checkin consumed")
 
             await upstream.queue.put(
                 {"type": "messages", "items": [item(3, "你好")]}
@@ -376,9 +432,26 @@ async def main() -> None:
             await wait_sent(upstream, ["游戏开始", "签到成功", "bot"])
             stage("message 3: fallback bot consumed")
 
+            await upstream.queue.put(
+                {"type": "messages", "items": [item(4, "签 到")]}
+            )
+            await wait_sent(
+                upstream,
+                ["游戏开始", "签到成功", "bot", "已归一", "签到成功"],
+            )
+            stage("message 4: fixer rewrote content, checkin consumed")
+
             await clients["bot"].send("主动消息", request_id="r1")
             await wait_sent(
-                upstream, ["游戏开始", "签到成功", "bot", "主动消息"]
+                upstream,
+                [
+                    "游戏开始",
+                    "签到成功",
+                    "bot",
+                    "已归一",
+                    "签到成功",
+                    "主动消息",
+                ],
             )
             await wait_until(
                 lambda: any(
@@ -405,8 +478,12 @@ async def main() -> None:
 
             assert not saw("bot", "开始数字游戏", False)
             assert not saw("bot", "42", False)
+            assert not saw("bot", "签 到", False)
             assert saw("bot", "你好", False)
             assert saw("game", "42", True)
+            assert saw("game", "签 到", True)
+            assert saw("fixer", "签 到", False)
+            assert saw("checkin", "42", False)
 
             assert welcomes["game"].chat_title == "群聊A", welcomes["game"]
             assert welcomes["game"].listener_running is True, welcomes["game"]
@@ -463,8 +540,10 @@ async def main() -> None:
             assert status["pin"]["chat_title"] == "群聊A", status["pin"]
             assert status["apps"][0]["rules"]["mode"] == "rules", status["apps"]
             assert status["apps"][0]["rules"]["source"] == "hello", status["apps"]
-            assert status["stats"]["dispatched"] == 3, status["stats"]
-            assert status["stats"]["consumed"] == 3, status["stats"]
+            assert status["apps"][0]["can_rewrite"] is True, status["apps"]
+            assert status["stats"]["dispatched"] == 4, status["stats"]
+            assert status["stats"]["consumed"] == 4, status["stats"]
+            assert status["stats"]["rewrites"] == 4, status["stats"]
             assert status["context"]["chat_title"] == "群聊B", status["context"]
             stage("status verified")
     finally:

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""发送协调：统一代发，并向应用回执入队与最终发送结果。"""
+"""发送协调：统一代发，并向应用回执每个 part 的入队与最终结果。"""
 
 from __future__ import annotations
 
@@ -33,21 +33,35 @@ class SendCoordinator:
 
     async def send_for_decision(
         self,
-        text: str,
+        parts: list[dict],
         *,
         app_id: str,
         dispatch_id: str = "",
         offer_id: str = "",
-        image: dict | None = None,
-    ) -> None:
-        await self._send(
-            text,
-            app_id=app_id,
-            dispatch_id=dispatch_id,
-            offer_id=offer_id,
-            request_id="",
-            image=image,
-        )
+    ) -> tuple[int, int]:
+        """按顺序发送 response 展开后的每条消息，返回 (成功, 失败)。"""
+
+        total = len(parts)
+        sent = 0
+        failed = 0
+        for index, part in enumerate(parts):
+            text = str(part.get("text") or "")
+            image = part.get("image")
+            ok = await self._send(
+                text,
+                app_id=app_id,
+                dispatch_id=dispatch_id,
+                offer_id=offer_id,
+                request_id="",
+                image=image,
+                part_index=index,
+                part_count=total,
+            )
+            if ok:
+                sent += 1
+            else:
+                failed += 1
+        return sent, failed
 
     async def send_from_app(
         self,
@@ -65,6 +79,8 @@ class SendCoordinator:
             offer_id="",
             request_id=request_id,
             image=image,
+            part_index=0,
+            part_count=1,
         )
 
     async def close(self) -> None:
@@ -84,7 +100,9 @@ class SendCoordinator:
         offer_id: str,
         request_id: str,
         image: dict | None = None,
-    ) -> None:
+        part_index: int,
+        part_count: int,
+    ) -> bool:
         try:
             result = await self._upstream.send_text(text, image=image)
         except Exception as exc:
@@ -96,13 +114,15 @@ class SendCoordinator:
                     dispatch_id=dispatch_id,
                     offer_id=offer_id,
                     request_id=request_id,
+                    part_index=part_index,
+                    part_count=part_count,
                     status="failed",
                     ok=False,
                     final=True,
                     error=error,
                 ),
             )
-            raise
+            return False
 
         task_id = str(result.get("task_id") or "")
         status = str(result.get("status") or "queued")
@@ -113,6 +133,8 @@ class SendCoordinator:
                 dispatch_id=dispatch_id,
                 offer_id=offer_id,
                 request_id=request_id,
+                part_index=part_index,
+                part_count=part_count,
                 task_id=task_id,
                 status=status,
                 ok=True,
@@ -127,6 +149,8 @@ class SendCoordinator:
                     "dispatch_id": dispatch_id,
                     "request_id": request_id,
                     "task_id": task_id,
+                    "part_index": part_index,
+                    "part_count": part_count,
                     "text": text[:200],
                     "image": bool(image),
                 },
@@ -142,10 +166,13 @@ class SendCoordinator:
                     dispatch_id=dispatch_id,
                     offer_id=offer_id,
                     request_id=request_id,
+                    part_index=part_index,
+                    part_count=part_count,
                 )
             )
             self._tasks.add(task)
             task.add_done_callback(self._tasks.discard)
+        return True
 
     async def _poll(
         self,
@@ -155,6 +182,8 @@ class SendCoordinator:
         dispatch_id: str,
         offer_id: str,
         request_id: str,
+        part_index: int,
+        part_count: int,
     ) -> None:
         deadline = time.monotonic() + self._timeout
         while time.monotonic() < deadline:
@@ -175,6 +204,8 @@ class SendCoordinator:
                         dispatch_id=dispatch_id,
                         offer_id=offer_id,
                         request_id=request_id,
+                        part_index=part_index,
+                        part_count=part_count,
                         task_id=task_id,
                         status=status,
                         ok=status == "success",
@@ -191,6 +222,8 @@ class SendCoordinator:
                 dispatch_id=dispatch_id,
                 offer_id=offer_id,
                 request_id=request_id,
+                part_index=part_index,
+                part_count=part_count,
                 task_id=task_id,
                 status="unknown",
                 ok=False,
@@ -212,6 +245,8 @@ class SendCoordinator:
         dispatch_id: str,
         offer_id: str,
         request_id: str,
+        part_index: int,
+        part_count: int,
         task_id: str = "",
         status: str,
         ok: bool,
@@ -225,6 +260,8 @@ class SendCoordinator:
             "dispatch_id": dispatch_id or "",
             "offer_id": offer_id or "",
             "request_id": request_id or "",
+            "part_index": part_index,
+            "part_count": part_count,
             "task_id": task_id,
             "status": status,
             "ok": ok,

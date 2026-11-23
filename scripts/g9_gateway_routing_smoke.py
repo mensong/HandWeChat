@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""网关路由冒烟测试：组过滤、规则命中、通用机器人顺延与置顶隔离。"""
+"""网关路由冒烟测试：组过滤、规则命中、加工链重算与置顶隔离。"""
 
 from __future__ import annotations
 
@@ -11,8 +11,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from handwechat.gateway.config import GatewayAppConfig, GatewayConfig
 from handwechat.gateway.dispatcher import Dispatcher, GatewayStats
-from handwechat.gateway.models import Decision, IncomingMessage
+from handwechat.gateway.models import IncomingMessage
 from handwechat.gateway.pin import PinManager
+from handwechat.gateway.protocol import Decision
 from handwechat.gateway.registry import AppRegistry
 from handwechat.gateway.rules import RuleError, parse_hello_rules
 
@@ -40,7 +41,9 @@ class FakeOffer:
         self.handler = handler
         self.calls: list[tuple[str, bool]] = []
 
-    async def __call__(self, app_runtime, msg, *, pinned, pin, timeout_s):
+    async def __call__(
+        self, app_runtime, msg, *, pinned, pin, timeout_s, response
+    ):
         self.calls.append((app_runtime.id, pinned))
         return self.handler(app_runtime.id, msg, pinned), f"offer-{len(self.calls)}"
 
@@ -52,8 +55,8 @@ def build(config: GatewayConfig, handler, context: dict):
     pins = PinManager()
     offer = FakeOffer(handler)
 
-    async def send_reply(text, *, app_id, dispatch_id="", offer_id="", image=None):
-        return None
+    async def send_reply(parts, *, app_id, dispatch_id="", offer_id=""):
+        return len(parts), 0
 
     async def notify(pin):
         return None
@@ -84,7 +87,7 @@ async def scenario_group_filter() -> None:
     )
     dispatcher, offer, _pins, registry = build(
         config,
-        lambda app_id, _msg, _pinned: Decision("consume"),
+        lambda app_id, _msg, _pinned: Decision.consume(),
         {"chat_title": "群A", "chat_type": "group"},
     )
     for app_id in ("a-group", "b-group"):
@@ -108,12 +111,16 @@ async def scenario_rules_and_catch_all() -> None:
 
     def handler(app_id: str, msg: IncomingMessage, _pinned: bool) -> Decision:
         if msg.content == "签到":
-            return Decision("consume") if app_id == "checkin" else Decision("skip")
+            return (
+                Decision.consume()
+                if app_id == "checkin"
+                else Decision.rewrite()
+            )
         if msg.content == "全部放弃":
-            return Decision("skip")
+            return Decision.rewrite()
         if app_id == "bot-high":
-            return Decision("skip")
-        return Decision("consume")
+            return Decision.rewrite()
+        return Decision.consume()
 
     dispatcher, offer, _pins, registry = build(
         config,
@@ -148,14 +155,14 @@ async def scenario_rules_and_catch_all() -> None:
         "bot-low",
     ], offer.calls
     dispatcher.close()
-    print("PASS 规则命中优先；通用机器人 skip 后继续顺延，全部 skip 才丢弃")
+    print("PASS 规则命中优先；通用机器人 rewrite 后继续顺延，全部放弃才丢弃")
 
 
 async def scenario_catch_all_failover() -> None:
     config = GatewayConfig(apps=[app("bot-high", 900), app("bot-low", 1000)])
     dispatcher, offer, _pins, registry = build(
         config,
-        lambda app_id, _msg, _pinned: Decision("consume"),
+        lambda app_id, _msg, _pinned: Decision.consume(),
         {"chat_title": "群A", "chat_type": "group"},
     )
     set_rules(registry, "bot-high", [])
@@ -169,6 +176,40 @@ async def scenario_catch_all_failover() -> None:
     print("PASS 通用机器人离线时自动顺延到下一名")
 
 
+async def scenario_rewrite_recomputes_rules() -> None:
+    config = GatewayConfig(
+        apps=[
+            app(
+                "fixer",
+                10,
+                can_rewrite=True,
+                rules=[{"keywords": ["签"]}],
+            ),
+            app("legacy", 20, rules=[{"keywords": ["签 到"]}]),
+            app("checkin", 30, rules=[{"regex": "^签到$"}]),
+        ]
+    )
+
+    def handler(app_id, msg, _pinned):
+        if app_id == "fixer":
+            assert msg.content == "签 到", msg.content
+            return Decision.rewrite(content="签到")
+        assert msg.content == "签到", msg.content
+        return Decision.consume()
+
+    dispatcher, offer, _pins, _registry = build(
+        config,
+        handler,
+        {"chat_title": "群A", "chat_type": "group"},
+    )
+    outcome = await dispatcher.dispatch(message("签 到"))
+    dispatcher.close()
+    assert outcome.consumed_by == "checkin", outcome
+    assert outcome.rewritten_by == ["fixer"], outcome
+    assert [call[0] for call in offer.calls] == ["fixer", "checkin"], offer.calls
+    print("PASS 改写后按新内容重算：新命中的应用进入，旧命中的应用退出")
+
+
 async def scenario_pin_bypass_and_chat_scope() -> None:
     config = GatewayConfig(apps=[app("checkin", 10), app("game", 100)])
     context = {"chat_title": "群A", "chat_type": "group"}
@@ -176,11 +217,11 @@ async def scenario_pin_bypass_and_chat_scope() -> None:
     def handler(app_id, msg, _pinned):
         if msg.content == "开始游戏":
             return (
-                Decision("consume", pin=True, state="playing")
+                Decision.consume(pin=True, state="playing")
                 if app_id == "game"
-                else Decision("skip")
+                else Decision.rewrite()
             )
-        return Decision("skip")
+        return Decision.rewrite()
 
     dispatcher, offer, pins, registry = build(config, handler, context)
     set_rules(registry, "checkin", [{"keywords": ["签到"]}])
@@ -201,7 +242,7 @@ async def scenario_unmatched_dropped() -> None:
     config = GatewayConfig(apps=[app("checkin", 10)])
     dispatcher, offer, _pins, registry = build(
         config,
-        lambda app_id, _msg, _pinned: Decision("consume"),
+        lambda app_id, _msg, _pinned: Decision.consume(),
         {"chat_title": "群A", "chat_type": "group"},
     )
     set_rules(registry, "checkin", [{"keywords": ["签到"]}])
@@ -218,7 +259,7 @@ async def scenario_config_rules_priority() -> None:
     )
     dispatcher, offer, _pins, registry = build(
         config,
-        lambda app_id, _msg, _pinned: Decision("consume"),
+        lambda app_id, _msg, _pinned: Decision.consume(),
         {"chat_title": "群A", "chat_type": "group"},
     )
     set_rules(registry, "a", [{"keywords": ["报名"]}])
@@ -275,6 +316,7 @@ async def main() -> None:
     await scenario_group_filter()
     await scenario_rules_and_catch_all()
     await scenario_catch_all_failover()
+    await scenario_rewrite_recomputes_rules()
     await scenario_pin_bypass_and_chat_scope()
     await scenario_unmatched_dropped()
     await scenario_config_rules_priority()

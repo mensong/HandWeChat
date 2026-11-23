@@ -117,6 +117,13 @@ class OcrPalette:
         return None
 
 
+DEFAULT_PALETTE = OcrPalette(
+    page=(250, 250, 250),
+    friend=(238, 238, 240),
+    own=(157, 242, 159),
+)
+
+
 @dataclass(frozen=True)
 class OcrCalibration:
     input_x_ratio: float = 0.9352678571428571
@@ -136,7 +143,7 @@ class OcrCalibration:
     window_size: WindowSize | None = None
     window_maximized: bool = False
     updated_at: str = ""
-    palette: OcrPalette | None = None
+    palette: OcrPalette | None = DEFAULT_PALETTE
 
     def to_dict(self) -> dict:
         return {
@@ -164,7 +171,7 @@ class OcrCalibration:
             window_size=_window_size(data.get("window_size")),
             window_maximized=bool(data.get("window_maximized")),
             updated_at=str(data.get("updated_at") or ""),
-            palette=OcrPalette.from_dict(palette_data) if palette_data else None,
+            palette=OcrPalette.from_dict(palette_data) if palette_data else DEFAULT_PALETTE,
         )
 
 

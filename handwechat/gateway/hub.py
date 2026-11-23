@@ -21,7 +21,7 @@ from handwechat.gateway.models import (
     now_iso,
 )
 from handwechat.gateway.pin import PinManager
-from handwechat.gateway.protocol import parse_image
+from handwechat.gateway.protocol import PROTOCOL_VERSION, parse_image
 from handwechat.gateway.registry import AppRegistry, AppRuntime
 from handwechat.gateway.rules import RuleError, parse_hello_rules
 
@@ -150,6 +150,7 @@ class AppHub:
                 {
                     "type": "welcome",
                     "app_id": app_id,
+                    "protocol": PROTOCOL_VERSION,
                     "heartbeat_seconds": self._config.heartbeat_seconds,
                     "pin": pin.to_payload() if pin and pin.app_id == app_id else None,
                     "context": self._context(),
@@ -185,6 +186,7 @@ class AppHub:
         pinned: bool,
         pin: PinState | None,
         timeout_s: float,
+        response: list[dict],
     ) -> "tuple[Decision, str]":
         connection = self._connections.get(app.id)
         if connection is None:
@@ -202,6 +204,7 @@ class AppHub:
                     "deadline_ms": int(round(timeout_s * 1000)),
                     "pin": pin.to_payload() if pin is not None else None,
                     "message": message.to_payload(),
+                    "response": response,
                 }
             )
         except Exception as exc:
@@ -276,11 +279,11 @@ class AppHub:
                     decision = Decision.parse(payload)
                 except ValueError as exc:
                     logger.warning(
-                        "应用 %s 的 decision 非法，按 skip 处理：%s",
+                        "应用 %s 的 decision 非法，按无改动处理：%s",
                         connection.app_id,
                         exc,
                     )
-                    decision = Decision(action="skip")
+                    decision = Decision.rewrite()
                 connection.resolve(offer_id, decision)
             elif kind == "send":
                 text = payload.get("text")
@@ -369,6 +372,8 @@ class AppHub:
     def _validate_hello(self, hello: dict) -> tuple[str | None, int, str]:
         if not isinstance(hello, dict) or hello.get("type") != "hello":
             return None, 4400, "首帧必须是 hello"
+        if not _protocol_matches(hello.get("protocol")):
+            return None, 4400, "protocol 版本不匹配"
         app_id = str(hello.get("app_id") or "").strip()
         if not app_id:
             return None, 4400, "hello 缺少 app_id"
@@ -378,3 +383,7 @@ class AppHub:
         if app.config.token and str(hello.get("token") or "") != app.config.token:
             return None, 4401, "token 不匹配"
         return app_id, 0, ""
+
+
+def _protocol_matches(value) -> bool:
+    return value == PROTOCOL_VERSION or str(value) == str(PROTOCOL_VERSION)

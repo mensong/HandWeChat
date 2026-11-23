@@ -166,6 +166,7 @@ def create_app(
                     "name": runtime.name,
                     "priority": runtime.priority,
                     "enabled": runtime.config.enabled,
+                    "can_rewrite": runtime.config.can_rewrite,
                     "groups": list(runtime.config.groups),
                     "rules": {
                         **summarize_rules(runtime.effective_rules()),
@@ -177,7 +178,7 @@ def create_app(
                     "hold_seconds": runtime.config.hold_seconds,
                     "offers": runtime.offers,
                     "consumes": runtime.consumes,
-                    "skips": runtime.skips,
+                    "rewrites": runtime.rewrites,
                     "timeouts": runtime.timeouts,
                     "last_error": runtime.last_error,
                 }

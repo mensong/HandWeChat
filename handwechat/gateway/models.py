@@ -47,9 +47,11 @@ class IncomingMessage:
     confidence: float
     dispatch_id: str
     type: str = "text"
+    extra: dict = field(default_factory=dict)
 
     @classmethod
     def from_upstream(cls, item: dict) -> "IncomingMessage":
+        extra = item.get("extra")
         return cls(
             id=str(item.get("id") or ""),
             cursor=int(item.get("cursor") or 0),
@@ -60,6 +62,7 @@ class IncomingMessage:
             confidence=_as_confidence(item.get("confidence")),
             dispatch_id=uuid.uuid4().hex,
             type=str(item.get("type") or "text"),
+            extra=dict(extra) if isinstance(extra, dict) else {},
         )
 
     def to_payload(self) -> dict:
@@ -72,6 +75,7 @@ class IncomingMessage:
             "type": self.type,
             "is_latest": self.is_latest,
             "confidence": self.confidence,
+            "extra": dict(self.extra),
         }
 
 
@@ -106,4 +110,5 @@ class DispatchOutcome:
     consumed_by: str | None = None
     tried: list[str] = field(default_factory=list)
     timed_out: list[str] = field(default_factory=list)
+    rewritten_by: list[str] = field(default_factory=list)
     elapsed_ms: float = 0.0

@@ -12,6 +12,9 @@ __all__ = [
     "SendResult",
     "ChatInfo",
     "Decision",
+    "ResponseItem",
+    "ResponseImage",
+    "PROTOCOL_VERSION",
 ]
 
 
@@ -39,4 +42,8 @@ def __getattr__(name: str):
         from handwechat.gateway.models import Decision
 
         return Decision
+    if name in ("ResponseItem", "ResponseImage", "PROTOCOL_VERSION"):
+        from handwechat.gateway import protocol
+
+        return getattr(protocol, name)
     raise AttributeError(name)

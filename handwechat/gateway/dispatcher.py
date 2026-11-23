@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
-"""串行调度：按优先级逐个询问应用，第一个消费的消息不再下发。"""
+"""串行调度：按优先级逐个询问应用，支持消息加工链与统一回复。"""
 
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import json
 import logging
 import time
@@ -21,6 +21,7 @@ from handwechat.gateway.models import (
 )
 from handwechat.gateway.pin import PinManager
 from handwechat.gateway.registry import AppRegistry, AppRuntime
+from handwechat.gateway.response import ResponseError, ResponseState
 from handwechat.gateway.rules import matches as rules_match
 
 logger = logging.getLogger("handwechat.gateway")
@@ -40,6 +41,7 @@ class GatewayStats:
     timeouts: int = 0
     unavailable: int = 0
     deadline_exceeded: int = 0
+    rewrites: int = 0
     sends: int = 0
     send_failures: int = 0
     pin_expired: int = 0
@@ -105,40 +107,58 @@ class Dispatcher:
         chat_type = str(chat_type) if chat_type else None
 
         active_pin = self._active_pin(started, chat_title)
-        candidates = self._candidates(
-            started, message, chat_title, chat_type, active_pin
+        working = message
+        original_content = message.content
+        response = ResponseState(
+            max_items=config.max_response_items,
+            max_text=config.max_response_text,
+            max_images=config.max_response_images,
+            max_image_bytes=config.max_response_image_bytes,
+            max_total_bytes=config.max_response_total_bytes,
         )
-        if not candidates:
-            self.stats.unconsumed += 1
-            outcome.elapsed_ms = (self._now() - started) * 1000.0
-            self._log_dispatch(
-                message,
-                outcome,
-                reason="no_app",
-                candidates=[],
-                chat=chat_title,
-            )
-            return outcome
+        asked: set[str] = set()
 
-        for app in candidates:
-            pin = active_pin
-            remaining = deadline - self._now()
+        while True:
+            now = self._now()
+            candidates = self._candidates(
+                now, working, chat_title, chat_type, active_pin, asked
+            )
+            if not candidates:
+                self.stats.unconsumed += 1
+                outcome.elapsed_ms = (now - started) * 1000.0
+                self._log_dispatch(
+                    working,
+                    outcome,
+                    reason="no_app",
+                    candidates=[],
+                    chat=chat_title,
+                    original_content=original_content,
+                    response_items=response.count,
+                )
+                return outcome
+
+            remaining = deadline - now
             if remaining <= 0.001:
                 self.stats.deadline_exceeded += 1
                 break
 
-            pinned = bool(pin is not None and pin.app_id == app.id)
+            app = candidates[0]
+            pinned = bool(
+                active_pin is not None and active_pin.app_id == app.id
+            )
             timeout_s = min(self._timeout_seconds(app), remaining)
             app.offers += 1
             outcome.tried.append(app.id)
+            asked.add(app.id)
 
             try:
                 decision, offer_id = await self._offer(
                     app,
-                    message,
+                    working,
                     pinned=pinned,
-                    pin=pin,
+                    pin=active_pin,
                     timeout_s=timeout_s,
+                    response=response.snapshot(),
                 )
             except OfferTimeout as exc:
                 self.stats.timeouts += 1
@@ -166,28 +186,51 @@ class Dispatcher:
                 app.consumes += 1
                 self.stats.consumed += 1
                 outcome.consumed_by = app.id
-                pin = self._apply_pin(app, decision, chat_title)
-                if decision.reply or decision.reply_image:
-                    await self._send(
-                        app,
-                        decision.reply or "",
-                        message,
-                        offer_id,
-                        decision.reply_image,
+                self._apply_pin(app, decision, chat_title)
+                self._apply_response(
+                    app, response, decision, working.dispatch_id
+                )
+                parts = response.final_parts()
+                if parts:
+                    await self._send(app, parts, working, offer_id)
+                else:
+                    self._log(
+                        "reply_summary",
+                        app_id=app.id,
+                        dispatch_id=working.dispatch_id,
+                        offer_id=offer_id,
+                        parts=0,
+                        text="",
                     )
-                break
+                outcome.elapsed_ms = (self._now() - started) * 1000.0
+                self._log_dispatch(
+                    working,
+                    outcome,
+                    reason="",
+                    candidates=[item.id for item in candidates],
+                    chat=chat_title,
+                    original_content=original_content,
+                    response_items=response.count,
+                )
+                return outcome
 
-            app.skips += 1
-        else:
-            self.stats.unconsumed += 1
+            app.rewrites += 1
+            self.stats.rewrites += 1
+            outcome.rewritten_by.append(app.id)
+            working = self._apply_message(app, decision, working)
+            self._apply_response(
+                app, response, decision, working.dispatch_id
+            )
 
         outcome.elapsed_ms = (self._now() - started) * 1000.0
         self._log_dispatch(
-            message,
+            working,
             outcome,
-            reason="",
-            candidates=[app.id for app in candidates],
+            reason="deadline",
+            candidates=[],
             chat=chat_title,
+            original_content=original_content,
+            response_items=response.count,
         )
         return outcome
 
@@ -219,12 +262,14 @@ class Dispatcher:
         chat_title: str,
         chat_type: str | None,
         active_pin: PinState | None,
+        asked: set[str],
     ) -> list[AppRuntime]:
         enabled = sorted(
             (
                 app
                 for app in self.registry.enabled()
                 if app.connected
+                and app.id not in asked
                 and not app.circuit_open(now)
                 and self._group_eligible(app, chat_title)
                 and rules_match(app.effective_rules(), message, chat_type)
@@ -236,7 +281,7 @@ class Dispatcher:
             if active_pin is not None
             else None
         )
-        if pinned is not None:
+        if pinned is not None and pinned.id not in asked:
             return [pinned] + [app for app in enabled if app.id != pinned.id]
         return enabled
 
@@ -276,6 +321,74 @@ class Dispatcher:
     def _timeout_seconds(self, app: AppRuntime) -> float:
         timeout_ms = app.config.timeout_ms or self.registry.config.default_offer_timeout_ms
         return max(0.05, timeout_ms / 1000.0)
+
+    def _apply_message(
+        self,
+        app: AppRuntime,
+        decision: Decision,
+        working: IncomingMessage,
+    ) -> IncomingMessage:
+        if not app.config.can_rewrite:
+            if (
+                decision.content is not None
+                or decision.sender is not None
+                or decision.extra is not None
+            ):
+                self._log(
+                    "rewrite_ignored",
+                    app_id=app.id,
+                    dispatch_id=working.dispatch_id,
+                    reason="can_rewrite=false",
+                )
+            return working
+
+        updated = working
+        if decision.content is not None and decision.content != updated.content:
+            updated = replace(updated, content=decision.content)
+        if decision.sender is not None and decision.sender != updated.sender:
+            updated = replace(updated, sender=decision.sender)
+        if decision.extra is not None:
+            merged = dict(updated.extra)
+            merged.update(decision.extra)
+            if merged != updated.extra:
+                updated = replace(updated, extra=merged)
+        if updated is not working:
+            self._log(
+                "rewrite",
+                app_id=app.id,
+                dispatch_id=working.dispatch_id,
+                content=working.content[:_MAX_LOG_CONTENT],
+                new_content=updated.content[:_MAX_LOG_CONTENT],
+                sender=updated.sender,
+                extra_keys=sorted(updated.extra),
+            )
+        return updated
+
+    def _apply_response(
+        self,
+        app: AppRuntime,
+        state: ResponseState,
+        decision: Decision,
+        dispatch_id: str,
+    ) -> None:
+        if decision.response is None:
+            return
+        try:
+            state.apply(app.id, app.config.can_rewrite, decision.response)
+        except ResponseError as exc:
+            self._log(
+                "response_ignored",
+                app_id=app.id,
+                dispatch_id=dispatch_id,
+                reason=str(exc),
+            )
+            return
+        self._log(
+            "response",
+            app_id=app.id,
+            dispatch_id=dispatch_id,
+            items=state.count,
+        )
 
     def _apply_pin(
         self, app: AppRuntime, decision: Decision, chat_title: str
@@ -358,32 +471,44 @@ class Dispatcher:
     async def _send(
         self,
         app: AppRuntime,
-        text: str,
+        parts: list[dict],
         message: IncomingMessage,
         offer_id: str,
-        image: dict | None = None,
     ) -> None:
         try:
-            await self._send_reply(
-                text,
+            result = await self._send_reply(
+                parts,
                 app_id=app.id,
                 dispatch_id=message.dispatch_id,
                 offer_id=offer_id,
-                image=image,
-            )
-            self.stats.sends += 1
-            self._log(
-                "reply",
-                app_id=app.id,
-                dispatch_id=message.dispatch_id,
-                offer_id=offer_id,
-                text=text[:_MAX_LOG_CONTENT],
-                image=bool(image),
             )
         except Exception as exc:
-            self.stats.send_failures += 1
+            self.stats.send_failures += len(parts)
             app.last_error = f"回复发送失败：{type(exc).__name__}: {exc}"
             logger.warning("应用 %s 的回复发送失败：%s", app.id, exc)
+            return
+
+        if isinstance(result, tuple) and len(result) == 2:
+            sent, failed = int(result[0]), int(result[1])
+        else:
+            sent, failed = len(parts), 0
+        self.stats.sends += sent
+        self.stats.send_failures += failed
+        if failed:
+            app.last_error = f"{failed} 条回复发送失败"
+        summary = next(
+            (part["text"] for part in parts if part.get("text")), ""
+        )
+        self._log(
+            "reply_summary",
+            app_id=app.id,
+            dispatch_id=message.dispatch_id,
+            offer_id=offer_id,
+            parts=len(parts),
+            sent=sent,
+            failed=failed,
+            text=summary[:_MAX_LOG_CONTENT],
+        )
 
     def _log_dispatch(
         self,
@@ -393,6 +518,8 @@ class Dispatcher:
         reason: str,
         candidates: list[str],
         chat: str,
+        original_content: str = "",
+        response_items: int = 0,
     ) -> None:
         fields = {
             "event": "dispatch",
@@ -400,11 +527,14 @@ class Dispatcher:
             "message_id": message.id,
             "sender": message.sender,
             "content": message.content[:_MAX_LOG_CONTENT],
+            "original_content": original_content[:_MAX_LOG_CONTENT],
             "chat": chat,
             "candidates": candidates,
             "consumed_by": outcome.consumed_by,
             "tried": outcome.tried,
+            "rewritten_by": outcome.rewritten_by,
             "timed_out": outcome.timed_out,
+            "response_items": response_items,
             "elapsed_ms": round(outcome.elapsed_ms, 2),
         }
         if reason:
