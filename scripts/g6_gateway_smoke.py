@@ -336,6 +336,36 @@ def scenario_config_validation() -> None:
     )
     assert [item.id for item in registry.enabled()] == ["c", "d", "a", "b"]
 
+    system_config = GatewayConfig(
+        system_apps=[app("sys-b", 5), app("sys-a", 5)],
+        apps=[app("early", -10), app("late", 100)],
+    )
+    system_config.validate()
+    system_registry = AppRegistry(system_config)
+    assert [item.id for item in system_registry.enabled()] == [
+        "sys-b",
+        "sys-a",
+        "early",
+        "late",
+    ]
+
+    base = GatewayConfig(apps=[app("mover", 10)])
+    mover_registry = AppRegistry(base)
+    mover = mover_registry.get("mover")
+    mover.consumes = 7
+    mover_registry.reload(GatewayConfig(system_apps=[app("mover", 10)]))
+    assert mover_registry.get("mover") is mover
+    assert mover.system is True and mover.consumes == 7
+
+    try:
+        GatewayConfig(
+            system_apps=[app("dup", 0)], apps=[app("dup", 10)]
+        ).validate()
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("system_apps 与 apps 的重复 id 未被拒绝")
+
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "gateway_config.json"
         path.write_text(
@@ -343,6 +373,14 @@ def scenario_config_validation() -> None:
                 {
                     "listen_port": 8100,
                     "max_response_images": 3,
+                    "system_apps": [
+                        {
+                            "id": "sys",
+                            "priority": 0,
+                            "can_rewrite": True,
+                            "rules": [],
+                        }
+                    ],
                     "apps": [
                         {
                             "id": "a",
@@ -358,6 +396,8 @@ def scenario_config_validation() -> None:
             encoding="utf-8",
         )
         loaded = GatewayConfig.load(path)
+        assert loaded.system_apps[0].id == "sys"
+        assert loaded.all_apps()[0].id == "sys"
         assert loaded.apps[0].id == "a"
         assert loaded.apps[0].hold_seconds == 30
         assert loaded.apps[0].can_rewrite is True
@@ -376,7 +416,7 @@ def scenario_config_validation() -> None:
             pass
         else:
             raise AssertionError("非法配置规则未被拒绝")
-    print("PASS 配置校验、同优先级按数组顺序与加载")
+    print("PASS 配置校验、同优先级按数组顺序、系统应用区与加载")
 
 
 async def main() -> None:

@@ -52,6 +52,7 @@ class GatewayConfig:
     max_response_images: int = 5
     max_response_image_bytes: int = 1024 * 1024
     max_response_total_bytes: int = 5 * 1024 * 1024
+    system_apps: list[GatewayAppConfig] = field(default_factory=list)
     apps: list[GatewayAppConfig] = field(default_factory=list)
 
     @classmethod
@@ -63,14 +64,8 @@ class GatewayConfig:
         if not isinstance(data, dict):
             raise ValueError("网关配置必须是 JSON 对象")
 
-        raw_apps = data.get("apps") or []
-        if not isinstance(raw_apps, list):
-            raise ValueError("apps 必须是数组")
-        apps = []
-        for item in raw_apps:
-            if not isinstance(item, dict):
-                raise ValueError("apps 中的每一项必须是对象")
-            apps.append(_parse_app(item))
+        system_apps = _parse_apps(data.get("system_apps"), "system_apps")
+        apps = _parse_apps(data.get("apps"), "apps")
         config = cls(
             upstream_ws_url=str(
                 data.get("upstream_ws_url") or "ws://127.0.0.1:8000/api/v1/ws/messages"
@@ -136,36 +131,63 @@ class GatewayConfig:
                     data.get("max_response_total_bytes"), 5 * 1024 * 1024
                 ),
             ),
+            system_apps=system_apps,
             apps=apps,
         )
         config.validate()
         return config
 
+    def all_apps(self) -> list[GatewayAppConfig]:
+        """系统应用在前、普通应用在后，保留各自的数组顺序。"""
+
+        return [*self.system_apps, *self.apps]
+
     def validate(self) -> None:
-        """应用 id 必须唯一；priority 允许重复，重复时按 apps 数组顺序询问。"""
+        """应用 id 在 system_apps 与 apps 间必须唯一；priority 允许重复。"""
 
         seen_ids: set[str] = set()
-        for app in self.apps:
-            if not app.id:
-                raise ValueError("应用 id 不能为空")
-            if app.id in seen_ids:
-                raise ValueError(f"应用 id 重复：{app.id}")
-            seen_ids.add(app.id)
-            if app.rules is not None:
-                parse_rules(app.rules)
+        for label, apps in (
+            ("system_apps", self.system_apps),
+            ("apps", self.apps),
+        ):
+            for app in apps:
+                if not app.id:
+                    raise ValueError(f"{label} 中的应用 id 不能为空")
+                if app.id in seen_ids:
+                    raise ValueError(f"应用 id 重复：{app.id}")
+                seen_ids.add(app.id)
+                if app.rules is not None:
+                    parse_rules(app.rules)
 
-    def duplicate_priorities(self) -> dict[int, list[str]]:
-        """按配置顺序返回重复出现的 priority 及其应用 id。"""
+    def duplicate_priorities(self) -> dict[tuple[str, int], list[str]]:
+        """按区和配置顺序返回重复出现的 priority 及其应用 id。"""
 
-        groups: dict[int, list[str]] = {}
-        for app in self.apps:
-            groups.setdefault(app.priority, []).append(app.id)
+        groups: dict[tuple[str, int], list[str]] = {}
+        for label, apps in (
+            ("system_apps", self.system_apps),
+            ("apps", self.apps),
+        ):
+            for app in apps:
+                groups.setdefault((label, app.priority), []).append(app.id)
         return {
-            priority: ids for priority, ids in groups.items() if len(ids) > 1
+            key: ids for key, ids in groups.items() if len(ids) > 1
         }
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+
+def _parse_apps(value, label: str) -> list[GatewayAppConfig]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ValueError(f"{label} 必须是数组")
+    apps: list[GatewayAppConfig] = []
+    for item in value:
+        if not isinstance(item, dict):
+            raise ValueError(f"{label} 中的每一项必须是对象")
+        apps.append(_parse_app(item))
+    return apps
 
 
 def _parse_app(data: dict) -> GatewayAppConfig:

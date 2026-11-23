@@ -122,7 +122,10 @@ def create_app(
                 {
                     "event": "gateway_started",
                     "listen": f"{config.listen_host}:{config.listen_port}",
-                    "apps": [app.id for app in config.apps],
+                    "apps": [app.id for app in config.all_apps()],
+                    "system_apps": [
+                        app.id for app in config.system_apps
+                    ],
                 },
                 ensure_ascii=False,
             )
@@ -164,6 +167,7 @@ def create_app(
                 {
                     "id": runtime.id,
                     "name": runtime.name,
+                    "system": runtime.system,
                     "priority": runtime.priority,
                     "enabled": runtime.config.enabled,
                     "can_rewrite": runtime.config.can_rewrite,
@@ -208,19 +212,42 @@ def create_app(
 
 
 def _warn_duplicate_priorities(config: GatewayConfig) -> None:
-    """重复优先级不阻断配置，记录告警，同值按 apps 数组顺序询问。"""
+    """重复优先级不阻断配置，记录告警，同值按各自数组顺序询问。"""
 
-    for priority, ids in config.duplicate_priorities().items():
+    for (block, priority), ids in config.duplicate_priorities().items():
         logger.warning(
             json.dumps(
                 {
                     "event": "duplicate_priority",
+                    "block": block,
                     "priority": priority,
                     "apps": ids,
                 },
                 ensure_ascii=False,
             )
         )
+
+
+def _describe_order(config: GatewayConfig) -> str:
+    """按系统区、普通区分别列出询问顺序，供热加载日志使用。"""
+
+    def block(apps) -> str:
+        return " → ".join(
+            f"{app.id}({app.priority})"
+            for _, app in sorted(
+                enumerate(apps),
+                key=lambda item: (item[1].priority, item[0]),
+            )
+        )
+
+    parts = []
+    system = block(config.system_apps)
+    if system:
+        parts.append(f"系统：{system}")
+    normal = block(config.apps)
+    if normal:
+        parts.append(f"普通：{normal}")
+    return "；".join(parts)
 
 
 def _console_notice(message: str) -> None:
@@ -276,19 +303,18 @@ async def _watch_config(
         for app_id in removed:
             await hub.close(app_id)
 
-        added = sorted({app.id for app in new_config.apps} - previous_ids)
-        order = " → ".join(
-            f"{app.id}({app.priority})"
-            for _, app in sorted(
-                enumerate(new_config.apps),
-                key=lambda item: (item[1].priority, item[0]),
-            )
-        ) or "（无应用）"
+        added = sorted(
+            {app.id for app in new_config.all_apps()} - previous_ids
+        )
+        order = _describe_order(new_config) or "（无应用）"
         logger.info(
             json.dumps(
                 {
                     "event": "config_reloaded",
-                    "apps": [app.id for app in new_config.apps],
+                    "apps": [app.id for app in new_config.all_apps()],
+                    "system_apps": [
+                        app.id for app in new_config.system_apps
+                    ],
                     "added": added,
                     "removed": removed,
                     "order": order,
@@ -297,7 +323,7 @@ async def _watch_config(
             )
         )
         _console_notice(
-            f"配置已热加载：{len(new_config.apps)} 个应用"
+            f"配置已热加载：{len(new_config.all_apps())} 个应用"
             f"（新增 {len(added)}，移除 {len(removed)}）；顺序：{order}"
         )
         if removed:

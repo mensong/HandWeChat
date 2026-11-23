@@ -238,6 +238,49 @@ async def scenario_pin_bypass_and_chat_scope() -> None:
     print("PASS 置顶绕过规则，但只对同一个群生效")
 
 
+async def scenario_system_apps_before_pin() -> None:
+    config = GatewayConfig(
+        system_apps=[app("dispatch", 50, can_rewrite=True)],
+        apps=[app("early", -10), app("game", 100)],
+    )
+    context = {"chat_title": "群A", "chat_type": "group"}
+
+    def handler(app_id, msg, _pinned):
+        if msg.content == "开始游戏":
+            if app_id == "game":
+                return Decision.consume(pin=True, state="playing")
+            return Decision.rewrite()
+        if app_id == "dispatch":
+            return Decision.rewrite(content="签到")
+        return Decision.consume()
+
+    dispatcher, offer, pins, registry = build(config, handler, context)
+    set_rules(registry, "dispatch", [{"keywords": ["签 到"]}])
+    set_rules(registry, "early", [{"keywords": ["早"]}])
+    set_rules(registry, "game", [{"keywords": ["开始游戏"]}])
+    assert [item.id for item in registry.enabled()] == [
+        "dispatch",
+        "early",
+        "game",
+    ]
+
+    await dispatcher.dispatch(message("开始游戏", 1))
+    assert pins.pin is not None and pins.pin.app_id == "game"
+    assert [call[0] for call in offer.calls] == ["game"], offer.calls
+
+    offer.calls.clear()
+    outcome = await dispatcher.dispatch(message("签 到", 2))
+    # 系统应用先改写，置顶的普通应用排在系统区之后立即收到改写后的消息。
+    assert outcome.consumed_by == "game", outcome
+    assert [call[0] for call in offer.calls] == [
+        "dispatch",
+        "game",
+    ], offer.calls
+    assert offer.calls[1] == ("game", True), offer.calls
+    dispatcher.close()
+    print("PASS 系统应用始终先于置顶普通应用，置顶只在普通区生效")
+
+
 async def scenario_unmatched_dropped() -> None:
     config = GatewayConfig(apps=[app("checkin", 10)])
     dispatcher, offer, _pins, registry = build(
@@ -318,6 +361,7 @@ async def main() -> None:
     await scenario_catch_all_failover()
     await scenario_rewrite_recomputes_rules()
     await scenario_pin_bypass_and_chat_scope()
+    await scenario_system_apps_before_pin()
     await scenario_unmatched_dropped()
     await scenario_config_rules_priority()
     scenario_rule_validation()

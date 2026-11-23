@@ -264,26 +264,35 @@ class Dispatcher:
         active_pin: PinState | None,
         asked: set[str],
     ) -> list[AppRuntime]:
-        enabled = sorted(
-            (
-                app
-                for app in self.registry.enabled()
-                if app.connected
-                and app.id not in asked
-                and not app.circuit_open(now)
-                and self._group_eligible(app, chat_title)
-                and rules_match(app.effective_rules(), message, chat_type)
-            ),
-            key=lambda app: (app.priority, app.order),
-        )
         pinned = (
             self.registry.get(active_pin.app_id)
             if active_pin is not None
             else None
         )
-        if pinned is not None and pinned.id not in asked:
-            return [pinned] + [app for app in enabled if app.id != pinned.id]
-        return enabled
+        system_apps: list[AppRuntime] = []
+        normal_apps: list[AppRuntime] = []
+        for app in self.registry.enabled():
+            if (
+                not app.connected
+                or app.id in asked
+                or app.circuit_open(now)
+                or not self._group_eligible(app, chat_title)
+            ):
+                continue
+            is_pinned = pinned is not None and app.id == pinned.id
+            if not is_pinned and not rules_match(
+                app.effective_rules(), message, chat_type
+            ):
+                continue
+            if app.system:
+                system_apps.append(app)
+            else:
+                normal_apps.append(app)
+        if pinned is not None and not pinned.system and pinned.id not in asked:
+            normal_apps = [pinned] + [
+                app for app in normal_apps if app.id != pinned.id
+            ]
+        return system_apps + normal_apps
 
     @staticmethod
     def _group_eligible(app: AppRuntime, chat_title: str) -> bool:

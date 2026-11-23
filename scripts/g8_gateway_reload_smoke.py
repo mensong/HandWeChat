@@ -27,9 +27,16 @@ def free_port() -> int:
         return int(sock.getsockname()[1])
 
 
-def write_apps(path: Path, apps: list[dict]) -> None:
+def write_apps(
+    path: Path,
+    apps: list[dict],
+    system_apps: list[dict] | None = None,
+) -> None:
+    payload: dict = {"apps": apps}
+    if system_apps is not None:
+        payload["system_apps"] = system_apps
     path.write_text(
-        json.dumps({"apps": apps}, ensure_ascii=False),
+        json.dumps(payload, ensure_ascii=False),
         encoding="utf-8",
     )
 
@@ -102,8 +109,15 @@ async def main() -> None:
                 )
                 text = await wait_output(buffer, "配置已热加载")
 
-            assert "b(20)" in text, text
-            assert "新增 1，移除 0" in text, text
+                assert "b(20)" in text, text
+                assert "新增 1，移除 0" in text, text
+
+                write_apps(
+                    config_path,
+                    [{"id": "b", "priority": 20}],
+                    [{"id": "a", "priority": 10}],
+                )
+                text = await wait_output(buffer, "系统：a(10)")
 
             status = await asyncio.to_thread(
                 get_json,
@@ -111,7 +125,12 @@ async def main() -> None:
             )
             ids = [item["id"] for item in status["apps"]]
             assert ids == ["a", "b"], ids
-            print("PASS 热加载：失败保留旧配置、成功后生效并在控制台提示")
+            assert status["apps"][0]["system"] is True
+            assert status["apps"][1]["system"] is False
+            print(
+                "PASS 热加载：失败保留旧配置、成功后生效并在控制台提示，"
+                "应用迁入系统区后排序生效"
+            )
         finally:
             close_gateway_logging()
             server.should_exit = True

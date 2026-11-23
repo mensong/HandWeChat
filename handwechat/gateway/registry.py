@@ -14,6 +14,8 @@ from handwechat.gateway.rules import Rule, parse_rules
 class AppRuntime:
     config: GatewayAppConfig
     order: int = 0
+    system: bool = False
+    system_order: int = 0
     connection: object | None = None
     hello_rules: tuple[Rule, ...] | None = None
     config_rules: tuple[Rule, ...] | None = None
@@ -36,6 +38,14 @@ class AppRuntime:
     @property
     def priority(self) -> int:
         return self.config.priority
+
+    @property
+    def sort_key(self) -> tuple[int, int, int]:
+        """系统应用永远在普通应用之前，区内按 priority、数组顺序。"""
+
+        if self.system:
+            return (0, self.priority, self.system_order)
+        return (1, self.priority, self.order)
 
     @property
     def connected(self) -> bool:
@@ -84,20 +94,21 @@ class AppRegistry:
     def __init__(self, config: GatewayConfig) -> None:
         config.validate()
         self.config = config
-        self._apps: dict[str, AppRuntime] = {
-            app.id: AppRuntime(
+        self._apps: dict[str, AppRuntime] = {}
+        for system, index, app in _iter_config_apps(config):
+            self._apps[app.id] = AppRuntime(
                 config=app,
-                order=order,
+                order=index,
+                system=system,
+                system_order=index if system else 0,
                 config_rules=_compile_config_rules(app),
             )
-            for order, app in enumerate(config.apps)
-        }
 
     def get(self, app_id: str) -> AppRuntime | None:
         return self._apps.get(app_id)
 
     def all(self) -> list[AppRuntime]:
-        return sorted(self._apps.values(), key=lambda app: (app.priority, app.order))
+        return sorted(self._apps.values(), key=lambda app: app.sort_key)
 
     def enabled(self) -> list[AppRuntime]:
         return [app for app in self.all() if app.config.enabled]
@@ -108,17 +119,21 @@ class AppRegistry:
         config.validate()
         previous = self._apps
         apps: dict[str, AppRuntime] = {}
-        for order, app_config in enumerate(config.apps):
+        for system, index, app_config in _iter_config_apps(config):
             runtime = previous.get(app_config.id)
             if runtime is None:
                 runtime = AppRuntime(
                     config=app_config,
-                    order=order,
+                    order=index,
+                    system=system,
+                    system_order=index if system else 0,
                     config_rules=_compile_config_rules(app_config),
                 )
             else:
                 runtime.config = app_config
-                runtime.order = order
+                runtime.order = index
+                runtime.system = system
+                runtime.system_order = index if system else 0
                 runtime.config_rules = _compile_config_rules(app_config)
             apps[app_config.id] = runtime
 
@@ -126,6 +141,21 @@ class AppRegistry:
         self._apps = apps
         self.config = config
         return removed
+
+
+def _iter_config_apps(
+    config: GatewayConfig,
+) -> list[tuple[bool, int, GatewayAppConfig]]:
+    """系统应用在前；返回 (是否系统应用, 所在数组序号, 应用配置)。"""
+
+    items = [
+        (True, index, app)
+        for index, app in enumerate(config.system_apps)
+    ]
+    items.extend(
+        (False, index, app) for index, app in enumerate(config.apps)
+    )
+    return items
 
 
 def _compile_config_rules(
