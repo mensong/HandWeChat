@@ -263,6 +263,71 @@ def _message_signature(message: OcrMessage) -> str:
     )
 
 
+def _find_tail_alignment(
+    previous: Sequence[str], current: Sequence[str]
+) -> Optional[tuple[int, int]]:
+    """Longest block ending `previous` that also occurs contiguously in `current`.
+
+    Returns the (start, length) of the block's last occurrence. Preferring the
+    last occurrence keeps an unchanged screen from being reported again just
+    because a later frame changed a pixel.
+    """
+
+    for length in range(min(len(previous), len(current)), 0, -1):
+        needle = tuple(previous[-length:])
+        for start in range(len(current) - length, -1, -1):
+            if tuple(current[start : start + length]) == needle:
+                return start, length
+    return None
+
+
+def _select_pending(
+    previous: Sequence[str],
+    messages: Sequence[OcrMessage],
+    last_emitted: str,
+) -> tuple[tuple[OcrMessage, ...], str, bool, int]:
+    """Return the messages past the previous frame's tail.
+
+    The anchor is the full signature list of the previous frame, self/bot
+    replies included, aligned as the longest contiguous tail block found in
+    this frame. Self messages only take part in that alignment; they are never
+    selected for emission.
+    """
+
+    current = tuple(_message_signature(message) for message in messages)
+    match = _find_tail_alignment(previous, current)
+    if match is not None:
+        start, length = match
+        pending = tuple(
+            message
+            for message in messages[start + length :]
+            if message.attr != MessageAttr.SELF
+        )
+        if pending:
+            return pending, "aligned", True, length
+        return (), "same", True, length
+    # The anchor scrolled out of view or was misread; fall back to the last
+    # emitted message, then to the single latest message.
+    for index in range(len(messages) - 1, -1, -1):
+        message = messages[index]
+        if (
+            message.attr != MessageAttr.SELF
+            and _message_signature(message) == last_emitted
+        ):
+            pending = tuple(
+                other
+                for other in messages[index + 1 :]
+                if other.attr != MessageAttr.SELF
+            )
+            # Keep the older anchor when nothing was emitted: this frame is the
+            # suspect one, so the next frame still aligns against it.
+            return pending, "fallback_anchor", bool(pending), 0
+    latest = tuple(
+        message for message in messages if message.attr != MessageAttr.SELF
+    )
+    return (latest[-1],), "fallback_latest", True, 0
+
+
 def _confidence_for(repeats: int) -> float:
     """Linear confidence: first sighting 1.0, then -0.3 per repeat, floor 0.1."""
 
@@ -819,6 +884,7 @@ class OcrChannel:
         self._history_size = max(1, int(history_size))
         self._history: deque[dict] = deque()
         self._last_signature = ""
+        self._prev_signatures: tuple[str, ...] = ()
         self._baseline_ready = False
         self.input_x_ratio = min(0.99, max(0.01, float(input_x_ratio)))
         self.input_y_ratio = min(0.99, max(0.01, float(input_y_ratio)))
@@ -989,6 +1055,7 @@ class OcrChannel:
         with self._state_lock:
             self._baseline_ready = False
             self._last_signature = ""
+            self._prev_signatures = ()
             self._history.clear()
 
         self._stop_event.clear()
@@ -1730,22 +1797,22 @@ class OcrChannel:
         started_at = time.perf_counter()
         with self._status_lock:
             self._palette_stale = frame.palette_stale
-        # Replies sent from this WeChat account (bot output included) render on
-        # the right side, so they must never be treated as incoming messages.
-        messages = tuple(
-            message
-            for message in frame.messages
-            if message.attr != MessageAttr.SELF
+        # The whole frame feeds the diff, self/bot replies included: a reply
+        # that lands under the last incoming message must not make that message
+        # look new again. Only non-self messages are ever emitted.
+        messages = frame.messages
+        incoming = tuple(
+            message for message in messages if message.attr != MessageAttr.SELF
         )
-        last: Optional[OcrMessage] = messages[-1] if messages else None
-        if last is None:
+        if not incoming:
             decision = "empty"
-            match_state = "self_only" if frame.messages else "empty"
+            match_state = "self_only" if messages else "empty"
         else:
             decision = "skip"
-            match_state = "skip"
+            match_state = "same"
         new_count = 0
         confidence = 0.0
+        anchor_length = 0
         emitted: list[tuple[int, OcrMessage, float, int, bool]] = []
 
         with self._status_lock:
@@ -1761,24 +1828,37 @@ class OcrChannel:
             self._emit_chat_changed(frame.chat_title)
 
         with self._state_lock:
+            previous_anchor_len = len(self._prev_signatures)
             if title_changed:
                 self._baseline_ready = False
                 self._last_signature = ""
+                self._prev_signatures = ()
                 self._history.clear()
 
-            if last is not None:
+            if incoming:
+                signatures = tuple(
+                    _message_signature(message) for message in messages
+                )
                 if not self._baseline_ready:
                     # First frame after start or a chat switch is the baseline.
                     self._baseline_ready = True
-                    self._last_signature = _message_signature(last)
+                    self._prev_signatures = signatures
+                    self._last_signature = _message_signature(incoming[-1])
                     decision = "first"
                     match_state = "baseline"
                     self._state.updated_at = _now_text()
                     self._save_state_locked()
                 else:
-                    # Everything after the last emitted message is new, even
+                    # Everything past the previous frame's tail is new, even
                     # when several messages landed between two captures.
-                    pending, match_state = self._select_pending(messages)
+                    (
+                        pending,
+                        match_state,
+                        advance_anchor,
+                        anchor_length,
+                    ) = _select_pending(
+                        self._prev_signatures, messages, self._last_signature
+                    )
                     new_count = len(pending)
                     for position, message in enumerate(pending):
                         signature = _message_signature(message)
@@ -1832,6 +1912,8 @@ class OcrChannel:
                             )
                         )
                         self._emit_message(base)
+                    if advance_anchor:
+                        self._prev_signatures = signatures
                     if pending:
                         self._last_signature = _message_signature(pending[-1])
                         self._state.updated_at = _now_text()
@@ -1862,29 +1944,10 @@ class OcrChannel:
             elapsed_ms=(time.perf_counter() - started_at) * 1000,
             match_state=match_state,
             new_count=new_count,
-            friend_count=len(messages),
+            friend_count=len(incoming),
+            prev_len=previous_anchor_len,
+            anchor_len=anchor_length,
         )
-
-    def _select_pending(
-        self, messages: Sequence[OcrMessage]
-    ) -> tuple[tuple[OcrMessage, ...], str]:
-        """Return the messages that follow the last one already emitted."""
-
-        match_state = "miss"
-        match_index = -1
-        for index in range(len(messages) - 1, -1, -1):
-            if _message_signature(messages[index]) == self._last_signature:
-                match_index = index
-                match_state = "found"
-                break
-        if match_index >= 0:
-            pending = tuple(messages[match_index + 1 :])
-            if not pending:
-                return (), "same"
-            return pending, match_state
-        # The previous message scrolled out of view or was misread; fall back to
-        # the single latest message, which is what earlier versions did.
-        return (messages[-1],), match_state
 
     def _log_frame(
         self,
@@ -1897,6 +1960,8 @@ class OcrChannel:
         match_state: str,
         new_count: int,
         friend_count: int,
+        prev_len: int,
+        anchor_len: int,
     ) -> None:
         if not logger.isEnabledFor(logging.INFO):
             return
@@ -1917,6 +1982,8 @@ class OcrChannel:
             "match": match_state,
             "new_count": new_count,
             "friends": friend_count,
+            "prev_len": prev_len,
+            "anchor_len": anchor_len,
             "bubbles": frame.bubbles,
             "clipped": frame.clipped,
             "palette_stale": frame.palette_stale,
