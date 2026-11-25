@@ -17,6 +17,7 @@ from fastapi import (
     Form,
     Query,
     Request,
+    Response,
     UploadFile,
     WebSocket,
     WebSocketDisconnect,
@@ -31,6 +32,9 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from handwechat.api.config import ApiConfig
 from handwechat.api.logging_setup import configure_api_logging
 from handwechat.api.models import (
+    ApiConfigResponse,
+    ApiConfigSaveRequest,
+    ApiConfigSavedResponse,
     AttachResponse,
     HealthResponse,
     HistoryClearResponse,
@@ -40,6 +44,12 @@ from handwechat.api.models import (
     LogTailResponse,
     MessageListResponse,
     MessageResponse,
+    OcrCalibrationResponse,
+    OcrCalibrationSaveRequest,
+    OcrCalibrationSavedResponse,
+    OcrCaptureResponse,
+    OcrColorSampleRequest,
+    OcrColorSampleResponse,
     SendRequest,
     SendTaskQueuedResponse,
     SendTaskResponse,
@@ -388,6 +398,71 @@ def create_app(
     @app.post("/api/v1/ocr/history/clear", response_model=HistoryClearResponse)
     def clear_ocr_history() -> HistoryClearResponse:
         return HistoryClearResponse.model_validate(service.clear_history())
+
+    @app.get("/api/v1/config", response_model=ApiConfigResponse)
+    def get_api_config() -> ApiConfigResponse:
+        return ApiConfigResponse.model_validate(service.get_config())
+
+    @app.put("/api/v1/config", response_model=ApiConfigSavedResponse)
+    def save_api_config(request: ApiConfigSaveRequest) -> ApiConfigSavedResponse:
+        return ApiConfigSavedResponse.model_validate(
+            service.save_config(request.values)
+        )
+
+    @app.get(
+        "/api/v1/config/ocr_calibration",
+        response_model=OcrCalibrationResponse,
+    )
+    def get_ocr_calibration() -> OcrCalibrationResponse:
+        return OcrCalibrationResponse.model_validate(service.get_ocr_calibration())
+
+    @app.post(
+        "/api/v1/config/ocr_calibration/capture",
+        response_model=OcrCaptureResponse,
+    )
+    async def capture_ocr_screenshot() -> OcrCaptureResponse:
+        return OcrCaptureResponse.model_validate(
+            await asyncio.to_thread(service.capture_ocr_screenshot)
+        )
+
+    @app.get("/api/v1/config/ocr_calibration/capture/{capture_id}")
+    def ocr_calibration_capture(capture_id: str) -> Response:
+        return Response(
+            content=service.capture_image(capture_id),
+            media_type="image/png",
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @app.post(
+        "/api/v1/config/ocr_calibration/sample_color",
+        response_model=OcrColorSampleResponse,
+    )
+    def sample_ocr_color(request: OcrColorSampleRequest) -> OcrColorSampleResponse:
+        return OcrColorSampleResponse.model_validate(
+            service.sample_ocr_color(
+                request.capture_id,
+                request.x_ratio,
+                request.y_ratio,
+            )
+        )
+
+    @app.put(
+        "/api/v1/config/ocr_calibration",
+        response_model=OcrCalibrationSavedResponse,
+    )
+    def save_ocr_calibration(
+        request: OcrCalibrationSaveRequest,
+    ) -> OcrCalibrationSavedResponse:
+        return OcrCalibrationSavedResponse.model_validate(
+            service.save_ocr_calibration(
+                request.capture_id,
+                title_box=request.title_box,
+                chat_box=request.chat_box,
+                input_x_ratio=request.input_x_ratio,
+                input_y_ratio=request.input_y_ratio,
+                palette=request.palette,
+            )
+        )
 
     @app.post(
         "/api/v1/send",

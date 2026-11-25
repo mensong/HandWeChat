@@ -3,12 +3,10 @@
 
 from __future__ import annotations
 
-import ctypes
-import time
 from dataclasses import dataclass
 from typing import Callable, Optional
 
-from PIL import Image, ImageGrab
+from PIL import Image
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
@@ -23,6 +21,7 @@ from PySide6.QtWidgets import (
 )
 
 from handwechat.ocr_calibration import DEFAULT_PALETTE, OcrCalibration, OcrPalette
+from handwechat.ocr_capture import WeChatCapture
 
 
 @dataclass(frozen=True)
@@ -345,16 +344,6 @@ def _legend_item(title: str, color: str, parent: Optional[QWidget] = None) -> QW
     return container
 
 
-@dataclass(frozen=True)
-class WeChatCapture:
-    """One calibration screenshot plus the window state it was taken with."""
-
-    image: Image.Image
-    window_width: int
-    window_height: int
-    maximized: bool
-
-
 class OcrCalibrationDialog(QDialog):
     def __init__(
         self,
@@ -588,57 +577,3 @@ class OcrCalibrationDialog(QDialog):
             QMessageBox.warning(self, "OCR 区域标定", str(exc))
             return
         self.accept()
-
-
-def capture_wechat_screenshot() -> WeChatCapture:
-    """Bring WeChat forward and capture it together with its window state."""
-
-    from handwechat.ocr_channel import _find_wechat_window
-
-    def set_window_topmost(hwnd: int, topmost: bool) -> None:
-        # HWND_TOPMOST/HWND_NOTOPMOST with SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW.
-        user32.SetWindowPos(
-            hwnd,
-            -1 if topmost else -2,
-            0,
-            0,
-            0,
-            0,
-            0x0043,
-        )
-
-    located = _find_wechat_window()
-    if located is None:
-        raise RuntimeError("未找到微信主窗口，请确认微信已启动并登录")
-    hwnd, _rect = located
-    user32 = ctypes.windll.user32
-    GWL_EXSTYLE = -20
-    WS_EX_TOPMOST = 0x00000008
-    was_topmost = bool(user32.GetWindowLongW(hwnd, GWL_EXSTYLE) & WS_EX_TOPMOST)
-    if user32.IsIconic(hwnd):
-        # Only a minimized window needs restoring: SW_RESTORE would also
-        # un-maximize a maximized window and change the calibrated layout.
-        user32.ShowWindow(hwnd, 9)
-        time.sleep(0.15)
-    set_window_topmost(hwnd, True)
-    user32.SetForegroundWindow(hwnd)
-
-    try:
-        time.sleep(0.2)
-
-        located = _find_wechat_window()
-        if located is None:
-            raise RuntimeError("截图前未找到微信主窗口")
-        _hwnd, rect = located
-        image = ImageGrab.grab(bbox=rect, all_screens=True)
-        if image.width <= 1 or image.height <= 1:
-            raise RuntimeError("微信窗口截图尺寸无效")
-        return WeChatCapture(
-            image=image,
-            window_width=int(rect[2] - rect[0]),
-            window_height=int(rect[3] - rect[1]),
-            maximized=bool(user32.IsZoomed(hwnd)),
-        )
-    finally:
-        if not was_topmost:
-            set_window_topmost(hwnd, False)

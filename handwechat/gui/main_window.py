@@ -23,10 +23,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from handwechat.gui.calibration_dialog import (
-    OcrCalibrationDialog,
-    capture_wechat_screenshot,
-)
+from handwechat.gui.calibration_dialog import OcrCalibrationDialog
 from handwechat.gui.config import GuiConfig
 from handwechat.gui.workers import FunctionWorker, WeChatController
 from handwechat.models import BaseMessage
@@ -35,6 +32,7 @@ from handwechat.ocr_calibration import (
     load_ocr_calibration,
     save_ocr_calibration,
 )
+from handwechat.ocr_capture import capture_wechat_screenshot
 from handwechat.paths import app_data_path
 
 

@@ -590,6 +590,223 @@
       white-space: pre;
     }
 
+    .config-panel {
+      display: flex;
+      flex-direction: column;
+      width: min(1180px, 100%);
+      height: min(860px, 100%);
+    }
+
+    .config-panel .config-body {
+      flex: 1;
+      min-height: 0;
+    }
+
+    .config-tabs {
+      display: flex;
+      gap: 6px;
+      flex: 1;
+      justify-content: flex-start;
+      flex-wrap: wrap;
+    }
+
+    .config-tab {
+      padding: 6px 12px;
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      background: var(--surface);
+      color: var(--text-muted);
+      font: inherit;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .config-tab.active {
+      color: var(--accent);
+      border-color: #b8d8cd;
+      background: var(--accent-soft);
+    }
+
+    .config-banner {
+      padding: 8px 16px;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface-muted);
+      color: var(--text-muted);
+      font-size: 12px;
+      white-space: pre-wrap;
+    }
+
+    .config-banner[hidden] { display: none; }
+    .config-banner.warn { background: #fdf3e3; color: var(--warning); }
+    .config-banner.ok { background: var(--accent-soft); color: var(--accent); }
+
+    .config-body {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      min-height: 0;
+      padding: 16px;
+      overflow: auto;
+    }
+
+    .config-pane {
+      display: flex;
+      flex: 1;
+      flex-direction: column;
+      gap: 12px;
+      min-height: 0;
+    }
+
+    .config-pane[hidden] { display: none; }
+
+    .config-note {
+      color: var(--text-muted);
+      font-size: 12px;
+      overflow-wrap: anywhere;
+    }
+
+    .calib-legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 14px;
+      color: var(--text-muted);
+      font-size: 12px;
+    }
+
+    .calib-legend .swatch {
+      display: inline-block;
+      width: 14px;
+      height: 14px;
+      margin-right: 5px;
+      vertical-align: -2px;
+      border: 1px solid #5a5a5a;
+    }
+
+    .calib-step { font-size: 13px; font-weight: 600; }
+
+    .calib-hint,
+    .calib-colors {
+      color: var(--text-muted);
+      font-size: 12px;
+      white-space: pre-wrap;
+    }
+
+    .calib-stage {
+      position: relative;
+      display: flex;
+      flex: 1;
+      align-items: center;
+      justify-content: center;
+      min-height: 280px;
+      padding: 0;
+      overflow: hidden;
+      background: var(--surface-muted);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+    }
+
+    .calib-stage .empty {
+      align-self: center;
+      padding: 24px;
+      color: var(--text-muted);
+      font-size: 13px;
+      text-align: center;
+    }
+
+    .calib-frame {
+      position: absolute;
+      top: 0;
+      left: 0;
+      transform-origin: 0 0;
+    }
+
+    .calib-frame img {
+      display: block;
+      width: 100%;
+      height: 100%;
+      user-select: none;
+      -webkit-user-drag: none;
+    }
+
+    .calib-frame canvas {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      cursor: crosshair;
+    }
+
+    .calib-nav,
+    .config-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .calib-nav .button,
+    .config-actions .button {
+      width: auto;
+      padding: 8px 14px;
+    }
+
+    .config-groups {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .config-group {
+      padding: 12px 14px 14px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+    }
+
+    .config-group h3 {
+      margin: 0 0 10px;
+      color: var(--text-muted);
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    .config-fields {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+      gap: 12px 16px;
+    }
+
+    .config-field label {
+      display: block;
+      margin-bottom: 4px;
+      color: var(--text-muted);
+      font-size: 12px;
+    }
+
+    .config-field input {
+      width: 100%;
+      padding: 7px 9px;
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      background: var(--surface);
+      color: var(--text);
+      font: inherit;
+    }
+
+    .config-field .field-hint {
+      margin-top: 3px;
+      color: var(--text-muted);
+      font-size: 11px;
+    }
+
+    .config-field .field-hint.restart { color: var(--warning); }
+
+    .config-actions .config-meta {
+      margin-left: auto;
+      color: var(--text-muted);
+      font-size: 12px;
+    }
+
     @media (max-width: 860px) {
       .app { padding: 12px; height: auto; }
       .workspace { grid-template-columns: 1fr; }
@@ -620,6 +837,9 @@
         </button>
         <button id="btn-stop" class="icon-button stop" type="button" title="暂停 OCR 监听" aria-label="暂停 OCR 监听">
           <i data-lucide="square"></i>
+        </button>
+        <button id="btn-config" class="icon-button" type="button" title="配置" aria-label="配置">
+          <i data-lucide="settings"></i>
         </button>
         <button id="btn-logs" class="icon-button" type="button" title="查看日志" aria-label="查看日志">
           <i data-lucide="scroll-text"></i>
@@ -742,6 +962,60 @@
     </section>
   </div>
 
+  <div id="config-modal" class="modal" hidden>
+    <div id="config-backdrop" class="modal-backdrop"></div>
+    <section class="modal-panel config-panel" role="dialog" aria-modal="true" aria-labelledby="config-title">
+      <div class="panel-head">
+        <h2 class="panel-title" id="config-title">配置</h2>
+        <div class="config-tabs" role="tablist">
+          <button id="tab-calibration" class="config-tab active" type="button" role="tab">OCR 区域标定</button>
+          <button id="tab-api" class="config-tab" type="button" role="tab">API 配置</button>
+        </div>
+        <button id="btn-config-close" class="icon-button" type="button" title="关闭配置" aria-label="关闭配置">
+          <i data-lucide="x"></i>
+        </button>
+      </div>
+      <div id="config-banner" class="config-banner" hidden></div>
+      <div class="config-body">
+        <section id="pane-calibration" class="config-pane">
+          <div id="calib-status" class="config-note">正在读取标定…</div>
+          <div class="calib-legend">
+            <span><i class="swatch" style="background:#1f6fb2"></i>标题区</span>
+            <span><i class="swatch" style="background:#257a46"></i>聊天区</span>
+            <span><i class="swatch" style="background:#6b6b6b"></i>页面底色</span>
+            <span><i class="swatch" style="background:#a36500"></i>对方气泡底色</span>
+            <span><i class="swatch" style="background:#0f7a7a"></i>自己气泡底色</span>
+            <span><i class="swatch" style="background:#a4262c"></i>发送输入区</span>
+          </div>
+          <div id="calib-step-label" class="calib-step">步骤 1 / 6：标题区</div>
+          <div id="calib-hint" class="calib-hint"></div>
+          <div id="calib-colors" class="calib-colors"></div>
+          <div id="calib-stage" class="calib-stage">
+            <div class="empty">点击「重新截图」获取微信主窗口截图后开始标定</div>
+          </div>
+          <div class="calib-nav">
+            <button class="button" type="button" id="btn-calib-capture">重新截图</button>
+            <button class="button" type="button" id="btn-calib-fit">适应窗口</button>
+            <button class="button" type="button" id="btn-calib-prev">上一步</button>
+            <button class="button" type="button" id="btn-calib-next">下一步</button>
+            <button class="button" type="button" id="btn-calib-clear">清空当前</button>
+            <button class="button" type="button" id="btn-calib-default">使用默认色</button>
+            <button class="button" type="button" id="btn-calib-save">保存标定</button>
+          </div>
+        </section>
+        <section id="pane-api" class="config-pane" hidden>
+          <div id="config-path" class="config-note">正在读取配置…</div>
+          <div id="config-groups" class="config-groups"></div>
+          <div class="config-actions">
+            <button class="button" type="button" id="btn-config-reset">恢复默认值</button>
+            <button class="button" type="button" id="btn-config-save">保存配置</button>
+            <span id="config-meta" class="config-meta"></span>
+          </div>
+        </section>
+      </div>
+    </section>
+  </div>
+
   <script>
     "use strict";
 
@@ -784,6 +1058,32 @@
       taskList: document.getElementById("task-list"),
       taskCount: document.getElementById("task-count"),
       errorBanner: document.getElementById("error-banner"),
+      config: document.getElementById("btn-config"),
+      configModal: document.getElementById("config-modal"),
+      configBackdrop: document.getElementById("config-backdrop"),
+      configClose: document.getElementById("btn-config-close"),
+      configTabCalibration: document.getElementById("tab-calibration"),
+      configTabApi: document.getElementById("tab-api"),
+      configBanner: document.getElementById("config-banner"),
+      configPaneCalibration: document.getElementById("pane-calibration"),
+      configPaneApi: document.getElementById("pane-api"),
+      calibStatus: document.getElementById("calib-status"),
+      calibStepLabel: document.getElementById("calib-step-label"),
+      calibHint: document.getElementById("calib-hint"),
+      calibColors: document.getElementById("calib-colors"),
+      calibStage: document.getElementById("calib-stage"),
+      calibCapture: document.getElementById("btn-calib-capture"),
+      calibFit: document.getElementById("btn-calib-fit"),
+      calibPrev: document.getElementById("btn-calib-prev"),
+      calibNext: document.getElementById("btn-calib-next"),
+      calibClear: document.getElementById("btn-calib-clear"),
+      calibDefault: document.getElementById("btn-calib-default"),
+      calibSave: document.getElementById("btn-calib-save"),
+      configPath: document.getElementById("config-path"),
+      configGroups: document.getElementById("config-groups"),
+      configReset: document.getElementById("btn-config-reset"),
+      configSave: document.getElementById("btn-config-save"),
+      configMeta: document.getElementById("config-meta"),
     };
 
     const MESSAGE_MODE_KEY = "handwechat.messageMode";
@@ -808,7 +1108,81 @@
       logKeywordTimer: null,
       image: null,
       imageUrl: null,
+      listenerRunning: false,
+      configOpen: false,
+      configTab: "calibration",
+      configBannerIsRunning: false,
+      configFields: [],
+      configDefaults: {},
+      configValues: {},
+      calibration: null,
+      calibrationCapture: null,
+      calibImage: null,
+      calibCanvas: null,
+      calibFrame: null,
+      calibResizeObserver: null,
+      calibView: { zoom: 1, x: 0, y: 0, fit: 1, scale: 1 },
+      calibPan: null,
+      calibStepIndex: 0,
+      calibSelections: {},
+      calibDrag: null,
+      calibBusy: false,
     };
+
+    const CALIBRATION_STEPS = [
+      {
+        key: "title_box",
+        title: "标题区",
+        mode: "rect",
+        hint: "框选微信右侧聊天顶部的当前聊天标题。",
+        color: "#1f6fb2",
+      },
+      {
+        key: "chat_box",
+        title: "聊天区",
+        mode: "rect",
+        hint: "框选右侧完整聊天消息区域：保留群昵称列，避开头像，不要包含输入框。",
+        color: "#257a46",
+      },
+      {
+        key: "page_color",
+        title: "页面底色",
+        mode: "color",
+        hint: "点击聊天背景的纯色处（消息之间的页面底色），取该点颜色。",
+        color: "#6b6b6b",
+      },
+      {
+        key: "friend_color",
+        title: "对方气泡底色",
+        mode: "color",
+        hint: "点击对方气泡的纯色处，取该点颜色；避开文字、头像与圆角。",
+        color: "#a36500",
+      },
+      {
+        key: "self_color",
+        title: "自己气泡底色",
+        mode: "color",
+        hint: "点击自己气泡的纯色处，取该点颜色；没有自己的消息时可使用「默认色」。",
+        color: "#0f7a7a",
+      },
+      {
+        key: "input_point",
+        title: "发送输入区",
+        mode: "point",
+        hint: "点击聊天底部的文本输入框。",
+        color: "#a4262c",
+      },
+    ];
+
+    const PALETTE_STEP_KEYS = {
+      page_color: "page",
+      friend_color: "friend",
+      self_color: "self",
+    };
+
+    const CALIB_MIN_ZOOM = 0.5;
+    const CALIB_MAX_ZOOM = 5;
+    const CALIB_ZOOM_STEP = 1.15;
 
     function renderIcons() {
       if (window.lucide) window.lucide.createIcons();
@@ -866,6 +1240,12 @@
       elements.start.disabled = !online || data.listener_running;
       elements.stop.disabled = !data.listener_running;
       elements.sendButton.disabled = !data.listener_running;
+      state.listenerRunning = Boolean(data.listener_running);
+      elements.config.disabled = state.listenerRunning;
+      elements.config.title = state.listenerRunning
+        ? "OCR 监听运行中，请先停止监听再配置"
+        : "配置";
+      if (state.configOpen) updateConfigAvailability();
     }
 
     function formatTime(value) {
@@ -1462,6 +1842,807 @@
       stopLogAutoRefresh();
     }
 
+    // -- 配置与 OCR 区域标定 -------------------------------------------------
+
+    function setConfigBanner(text, mode) {
+      const banner = elements.configBanner;
+      banner.textContent = text || "";
+      banner.classList.remove("warn", "ok");
+      if (mode) banner.classList.add(mode);
+      banner.hidden = !text;
+    }
+
+    function currentCalibStep() {
+      return CALIBRATION_STEPS[state.calibStepIndex];
+    }
+
+    function updateConfigAvailability() {
+      const running = state.listenerRunning;
+      for (const button of [
+        elements.calibCapture,
+        elements.calibSave,
+        elements.configReset,
+        elements.configSave,
+      ]) {
+        if (button) button.disabled = running;
+      }
+      if (running) {
+        if (!state.configBannerIsRunning) {
+          setConfigBanner("OCR 监听运行中，请先停止监听再修改配置。", "warn");
+        }
+        state.configBannerIsRunning = true;
+        updateCalibrationButtons();
+        return;
+      }
+      if (state.configBannerIsRunning) {
+        state.configBannerIsRunning = false;
+        setConfigBanner("");
+      }
+      updateCalibrationButtons();
+    }
+
+    function setConfigTab(tab) {
+      state.configTab = tab === "api" ? "api" : "calibration";
+      const api = state.configTab === "api";
+      elements.configTabCalibration.classList.toggle("active", !api);
+      elements.configTabApi.classList.toggle("active", api);
+      elements.configPaneCalibration.hidden = api;
+      elements.configPaneApi.hidden = !api;
+      if (!api && state.calibImage) {
+        requestAnimationFrame(applyCalibrationView);
+      }
+    }
+
+    async function openConfig() {
+      if (state.configOpen) return;
+      state.configOpen = true;
+      state.configBannerIsRunning = false;
+      elements.configModal.hidden = false;
+      setConfigTab(state.configTab);
+      updateConfigAvailability();
+      await Promise.all([loadConfig(), loadCalibration()]);
+    }
+
+    function closeConfig() {
+      state.configOpen = false;
+      elements.configModal.hidden = true;
+      state.calibDrag = null;
+      setConfigBanner("");
+    }
+
+    // -- API 配置 -----------------------------------------------------------
+
+    function renderConfigField(field, value) {
+      const wrap = document.createElement("div");
+      wrap.className = "config-field";
+      const label = document.createElement("label");
+      label.htmlFor = `config-field-${field.key}`;
+      label.textContent = field.label;
+      const input = document.createElement("input");
+      input.id = `config-field-${field.key}`;
+      input.dataset.key = field.key;
+      input.dataset.kind = field.kind;
+      input.dataset.label = field.label;
+      input.value = value === null || value === undefined ? "" : String(value);
+      if (field.kind === "int" || field.kind === "float") {
+        input.type = "number";
+        if (field.minimum !== null && field.minimum !== undefined) {
+          input.min = String(field.minimum);
+        }
+        if (field.maximum !== null && field.maximum !== undefined) {
+          input.max = String(field.maximum);
+        }
+        input.step = String(
+          field.step !== null && field.step !== undefined
+            ? field.step
+            : field.kind === "int"
+              ? 1
+              : 0.1
+        );
+      } else {
+        input.type = "text";
+      }
+      wrap.append(label, input);
+      if (field.hint) {
+        const hint = document.createElement("div");
+        hint.className = `field-hint${field.restart_required ? " restart" : ""}`;
+        hint.textContent = field.hint;
+        wrap.append(hint);
+      }
+      return wrap;
+    }
+
+    function renderConfigForm(values) {
+      const groups = new Map();
+      for (const field of state.configFields) {
+        if (!groups.has(field.group)) groups.set(field.group, []);
+        groups.get(field.group).push(field);
+      }
+      const sections = [];
+      for (const [group, fields] of groups) {
+        const section = document.createElement("section");
+        section.className = "config-group";
+        const title = document.createElement("h3");
+        title.textContent = group;
+        const grid = document.createElement("div");
+        grid.className = "config-fields";
+        for (const field of fields) {
+          grid.append(renderConfigField(field, values[field.key]));
+        }
+        section.append(title, grid);
+        sections.push(section);
+      }
+      elements.configGroups.replaceChildren(...sections);
+    }
+
+    async function loadConfig() {
+      try {
+        const data = await request("/api/v1/config");
+        state.configFields = data.fields || [];
+        state.configDefaults = data.defaults || {};
+        state.configValues = data.values || {};
+        renderConfigForm(state.configValues);
+        elements.configPath.textContent = data.exists
+          ? `配置文件：${data.path}`
+          : `配置文件：${data.path}（尚未创建，当前为默认值）`;
+        if (data.error && !state.configBannerIsRunning) {
+          setConfigBanner(data.error, "warn");
+        }
+        clearError();
+      } catch (error) {
+        setConfigBanner(error.message, "warn");
+      }
+    }
+
+    function collectConfigValues() {
+      const values = {};
+      for (const input of elements.configGroups.querySelectorAll("input[data-key]")) {
+        const raw = input.value.trim();
+        if (raw === "") {
+          throw new Error(`「${input.dataset.label}」不能为空`);
+        }
+        values[input.dataset.key] =
+          input.dataset.kind === "int" || input.dataset.kind === "float"
+            ? Number(raw)
+            : raw;
+      }
+      return values;
+    }
+
+    async function saveConfig() {
+      setBusy(elements.configSave, true);
+      try {
+        const values = collectConfigValues();
+        const data = await request("/api/v1/config", {
+          method: "PUT",
+          body: JSON.stringify({ values }),
+        });
+        state.configValues = data.values || values;
+        renderConfigForm(state.configValues);
+        elements.configMeta.textContent = "已保存";
+        if (!state.configBannerIsRunning) {
+          setConfigBanner(
+            data.restart_required
+              ? "配置已保存；host、port、日志等字段需重启 API 服务后生效，OCR 相关字段在下次启动监听时生效。"
+              : "配置已保存；OCR 相关字段在下次启动监听时生效。",
+            "ok"
+          );
+        }
+        clearError();
+      } catch (error) {
+        if (!state.configBannerIsRunning) setConfigBanner(error.message, "warn");
+      } finally {
+        setBusy(elements.configSave, false);
+        updateConfigAvailability();
+      }
+    }
+
+    function resetConfigDefaults() {
+      renderConfigForm(state.configDefaults);
+      elements.configMeta.textContent = "已填入默认值，保存后生效";
+      if (!state.configBannerIsRunning) setConfigBanner("");
+    }
+
+    // -- OCR 区域标定 -------------------------------------------------------
+
+    function renderCalibrationStatus() {
+      const data = state.calibration;
+      if (!data) {
+        elements.calibStatus.textContent = "正在读取标定…";
+        return;
+      }
+      if (data.error) {
+        elements.calibStatus.textContent = data.error;
+        return;
+      }
+      if (!data.exists) {
+        elements.calibStatus.textContent = `标定文件：${data.path}（尚未标定，完成六个步骤后保存）`;
+        return;
+      }
+      const updated = (data.calibration && data.calibration.updated_at) || "未知时间";
+      elements.calibStatus.textContent = `标定文件：${data.path}（已保存于 ${updated}）`;
+    }
+
+    async function loadCalibration() {
+      try {
+        state.calibration = await request("/api/v1/config/ocr_calibration");
+        renderCalibrationStatus();
+        if (state.calibrationCapture) {
+          applyInitialCalibrationSelections();
+          renderCalib();
+        }
+        clearError();
+      } catch (error) {
+        elements.calibStatus.textContent = `标定状态读取失败：${error.message}`;
+      }
+    }
+
+    function paletteSource() {
+      const data = state.calibration;
+      if (!data) return null;
+      const palette =
+        (data.calibration && data.calibration.palette) ||
+        (data.defaults && data.defaults.palette);
+      if (!palette) return null;
+      return {
+        page_color: palette.page,
+        friend_color: palette.friend,
+        self_color: palette.self,
+      };
+    }
+
+    function applyInitialCalibrationSelections() {
+      const capture = state.calibrationCapture;
+      const data = state.calibration;
+      if (!capture || !data) return;
+      const source = data.calibration || data.defaults;
+      const width = capture.width;
+      const height = capture.height;
+      const selections = {};
+      const rect = ratios => ({
+        type: "rect",
+        left: Number(ratios[0]) * width,
+        top: Number(ratios[1]) * height,
+        right: Number(ratios[2]) * width,
+        bottom: Number(ratios[3]) * height,
+      });
+      if (Array.isArray(source.title_box)) {
+        selections.title_box = rect(source.title_box);
+      }
+      if (Array.isArray(source.chat_box)) {
+        selections.chat_box = rect(source.chat_box);
+      }
+      selections.input_point = {
+        type: "point",
+        x: Number(source.input_x_ratio) * width,
+        y: Number(source.input_y_ratio) * height,
+      };
+      const colors = paletteSource();
+      const chat = selections.chat_box;
+      if (colors && chat) {
+        const x = (chat.left + chat.right) / 2;
+        const y = (chat.top + chat.bottom) / 2;
+        for (const [key, rgb] of Object.entries(colors)) {
+          selections[key] = { type: "color", x, y, rgb: rgb.slice(), defaulted: true };
+        }
+      }
+      state.calibSelections = selections;
+    }
+
+    function bindCalibrationEvents(canvas) {
+      canvas.addEventListener("contextmenu", event => event.preventDefault());
+      canvas.addEventListener("mousedown", event => {
+        if (event.button === 2) {
+          event.preventDefault();
+          startCalibrationPan(event);
+          return;
+        }
+        if (event.button !== 0) return;
+        const point = calibImagePoint(event);
+        const step = currentCalibStep();
+        if (step.mode === "color") {
+          pickCalibrationColor(point);
+        } else if (step.mode === "point") {
+          state.calibSelections[step.key] = { type: "point", x: point.x, y: point.y };
+          renderCalib();
+        } else {
+          state.calibDrag = { start: point, current: point };
+          drawCalibration();
+        }
+      });
+      canvas.addEventListener("mousemove", event => {
+        if (!state.calibDrag) return;
+        state.calibDrag.current = calibImagePoint(event);
+        drawCalibration();
+      });
+      canvas.addEventListener("mouseup", event => {
+        if (event.button !== 0 || !state.calibDrag) return;
+        const drag = state.calibDrag;
+        state.calibDrag = null;
+        const box = normalizeBox(drag.start, calibImagePoint(event));
+        if (box.right - box.left >= 1 && box.bottom - box.top >= 1) {
+          state.calibSelections[currentCalibStep().key] = { type: "rect", ...box };
+        }
+        renderCalib();
+      });
+      canvas.addEventListener("mouseleave", () => {
+        if (!state.calibDrag) return;
+        state.calibDrag = null;
+        drawCalibration();
+      });
+      canvas.addEventListener(
+        "wheel",
+        event => {
+          event.preventDefault();
+          zoomCalibration(event);
+        },
+        { passive: false }
+      );
+    }
+
+    function startCalibrationPan(event) {
+      const view = state.calibView;
+      const startX = event.clientX;
+      const startY = event.clientY;
+      const originX = view.x;
+      const originY = view.y;
+      const canvas = state.calibCanvas;
+      if (canvas) canvas.style.cursor = "grabbing";
+      state.calibPan = { startX, startY, originX, originY };
+
+      const onMove = moveEvent => {
+        view.x = originX + (moveEvent.clientX - startX);
+        view.y = originY + (moveEvent.clientY - startY);
+        applyCalibrationView();
+      };
+      const onUp = () => {
+        window.removeEventListener("mousemove", onMove);
+        window.removeEventListener("mouseup", onUp);
+        state.calibPan = null;
+        if (canvas) canvas.style.cursor = "";
+      };
+      window.addEventListener("mousemove", onMove);
+      window.addEventListener("mouseup", onUp);
+    }
+
+    function zoomCalibration(event) {
+      const image = state.calibImage;
+      const stage = elements.calibStage;
+      const view = state.calibView;
+      if (!image || !view.fit) return;
+      const rect = stage.getBoundingClientRect();
+      const pointerX = event.clientX - rect.left - stage.clientLeft;
+      const pointerY = event.clientY - rect.top - stage.clientTop;
+      const factor = event.deltaY < 0 ? CALIB_ZOOM_STEP : 1 / CALIB_ZOOM_STEP;
+      const zoom = Math.min(
+        CALIB_MAX_ZOOM,
+        Math.max(CALIB_MIN_ZOOM, view.zoom * factor)
+      );
+      if (zoom === view.zoom) return;
+      const imageX = (pointerX - view.x) / view.scale;
+      const imageY = (pointerY - view.y) / view.scale;
+      view.zoom = zoom;
+      view.scale = view.fit * zoom;
+      view.x = pointerX - imageX * view.scale;
+      view.y = pointerY - imageY * view.scale;
+      applyCalibrationView();
+    }
+
+    function calibImagePoint(event) {
+      const canvas = state.calibCanvas;
+      const image = state.calibImage;
+      const rect = canvas.getBoundingClientRect();
+      return {
+        x: (event.clientX - rect.left) * image.naturalWidth / Math.max(1, rect.width),
+        y: (event.clientY - rect.top) * image.naturalHeight / Math.max(1, rect.height),
+      };
+    }
+
+    function normalizeBox(first, second) {
+      return {
+        left: Math.min(first.x, second.x),
+        top: Math.min(first.y, second.y),
+        right: Math.max(first.x, second.x),
+        bottom: Math.max(first.y, second.y),
+      };
+    }
+
+    function pointInBox(point, box) {
+      return (
+        point.x >= box.left &&
+        point.x <= box.right &&
+        point.y >= box.top &&
+        point.y <= box.bottom
+      );
+    }
+
+    function resetCalibrationView() {
+      const view = state.calibView;
+      view.zoom = 1;
+      view.x = 0;
+      view.y = 0;
+      applyCalibrationView();
+    }
+
+    function applyCalibrationView() {
+      const image = state.calibImage;
+      const frame = state.calibFrame;
+      if (!image || !frame) return;
+      const stage = elements.calibStage;
+      if (stage.clientWidth <= 0 || stage.clientHeight <= 0) return;
+      const view = state.calibView;
+      const availableWidth = Math.max(160, stage.clientWidth - 16);
+      const availableHeight = Math.max(120, stage.clientHeight - 16);
+      view.fit = Math.min(
+        availableWidth / image.naturalWidth,
+        availableHeight / image.naturalHeight
+      );
+      view.scale = view.fit * view.zoom;
+      const width = image.naturalWidth * view.scale;
+      const height = image.naturalHeight * view.scale;
+      if (width <= stage.clientWidth) {
+        view.x = (stage.clientWidth - width) / 2;
+      } else {
+        view.x = Math.min(0, Math.max(stage.clientWidth - width, view.x));
+      }
+      if (height <= stage.clientHeight) {
+        view.y = (stage.clientHeight - height) / 2;
+      } else {
+        view.y = Math.min(0, Math.max(stage.clientHeight - height, view.y));
+      }
+      frame.style.width = `${width}px`;
+      frame.style.height = `${height}px`;
+      frame.style.transform = `translate(${view.x}px, ${view.y}px)`;
+      drawCalibration();
+    }
+
+    function drawCalibration() {
+      const canvas = state.calibCanvas;
+      const image = state.calibImage;
+      if (!canvas || !image) return;
+      const context = canvas.getContext("2d");
+      context.clearRect(0, 0, canvas.width, canvas.height);
+      // 画布缓冲固定为截图原尺寸，靠 CSS 缩放；线宽按显示比例补偿，放大后不跟着变粗。
+      const unit = 1 / Math.max(0.0001, state.calibView.scale);
+      const activeKey = currentCalibStep().key;
+      for (const step of CALIBRATION_STEPS) {
+        const selection = state.calibSelections[step.key];
+        if (!selection) continue;
+        const active = step.key === activeKey;
+        context.strokeStyle = step.color;
+        context.fillStyle = step.color;
+        context.lineWidth = (active ? 2 : 1) * unit;
+        if (selection.type === "rect") {
+          context.strokeRect(
+            selection.left,
+            selection.top,
+            selection.right - selection.left,
+            selection.bottom - selection.top
+          );
+        } else if (selection.type === "point") {
+          drawCalibCross(
+            context,
+            selection.x,
+            selection.y,
+            (active ? 5 : 4) * unit,
+            step.color,
+            unit
+          );
+        } else if (selection.type === "color") {
+          drawCalibColor(context, selection, (active ? 7 : 5) * unit, unit);
+        }
+      }
+      if (state.calibDrag) {
+        const box = normalizeBox(state.calibDrag.start, state.calibDrag.current);
+        context.strokeStyle = currentCalibStep().color;
+        context.lineWidth = 2 * unit;
+        context.strokeRect(
+          box.left,
+          box.top,
+          box.right - box.left,
+          box.bottom - box.top
+        );
+      }
+    }
+
+    function drawCalibCross(context, x, y, radius, color, unit) {
+      context.strokeStyle = color;
+      context.lineWidth = 2 * unit;
+      context.beginPath();
+      context.arc(x, y, radius, 0, Math.PI * 2);
+      context.moveTo(x - radius - 3 * unit, y);
+      context.lineTo(x + radius + 3 * unit, y);
+      context.moveTo(x, y - radius - 3 * unit);
+      context.lineTo(x, y + radius + 3 * unit);
+      context.stroke();
+    }
+
+    function drawCalibColor(context, selection, radius, unit) {
+      const { x, y } = selection;
+      const rgb = selection.rgb || [0, 0, 0];
+      context.fillStyle = `rgb(${rgb[0]}, ${rgb[1]}, ${rgb[2]})`;
+      context.fillRect(x - radius, y - radius, radius * 2, radius * 2);
+      context.strokeStyle = "rgb(30, 30, 30)";
+      context.lineWidth = unit;
+      context.strokeRect(x - radius, y - radius, radius * 2, radius * 2);
+      context.strokeStyle = "rgb(255, 255, 255)";
+      context.beginPath();
+      context.moveTo(x - radius - 3 * unit, y);
+      context.lineTo(x + radius + 3 * unit, y);
+      context.moveTo(x, y - radius - 3 * unit);
+      context.lineTo(x, y + radius + 3 * unit);
+      context.stroke();
+    }
+
+    function updateCalibrationTexts() {
+      const step = currentCalibStep();
+      elements.calibStepLabel.textContent =
+        `步骤 ${state.calibStepIndex + 1} / ${CALIBRATION_STEPS.length}：${step.title}`;
+      let hint = step.hint;
+      const selection = state.calibSelections[step.key];
+      if (step.mode === "color") {
+        hint +=
+          selection && selection.type === "color"
+            ? `\n当前取色：RGB(${selection.rgb.join(", ")})${selection.defaulted ? "（默认色）" : ""}`
+            : "\n尚未取色。";
+      }
+      elements.calibHint.textContent = hint;
+      const parts = [];
+      for (const item of CALIBRATION_STEPS) {
+        if (item.mode !== "color") continue;
+        const picked = state.calibSelections[item.key];
+        parts.push(
+          picked && picked.type === "color"
+            ? `${item.title} (${picked.rgb.join(", ")})${picked.defaulted ? " 默认" : ""}`
+            : `${item.title} 未选`
+        );
+      }
+      elements.calibColors.textContent = parts.join("　");
+    }
+
+    function updateCalibrationButtons() {
+      const buttons = [
+        elements.calibCapture,
+        elements.calibFit,
+        elements.calibPrev,
+        elements.calibNext,
+        elements.calibClear,
+        elements.calibDefault,
+        elements.calibSave,
+      ];
+      if (state.listenerRunning) {
+        for (const button of buttons) button.disabled = true;
+        return;
+      }
+      if (state.calibBusy) {
+        for (const button of buttons) button.disabled = true;
+        return;
+      }
+      const ready = Boolean(state.calibrationCapture) && Boolean(state.calibImage);
+      elements.calibCapture.disabled = false;
+      elements.calibFit.disabled = !ready;
+      elements.calibPrev.disabled = !ready || state.calibStepIndex <= 0;
+      elements.calibNext.disabled =
+        !ready || state.calibStepIndex >= CALIBRATION_STEPS.length - 1;
+      elements.calibClear.disabled = !ready;
+      elements.calibDefault.disabled = !ready || currentCalibStep().mode !== "color";
+      elements.calibSave.disabled = !ready;
+    }
+
+    function renderCalib() {
+      updateCalibrationTexts();
+      updateCalibrationButtons();
+      drawCalibration();
+    }
+
+    async function loadCalibrationImage(url) {
+      const image = new Image();
+      await new Promise((resolve, reject) => {
+        image.onload = () => resolve();
+        image.onerror = () => reject(new Error("标定截图加载失败，请重新截图"));
+        image.src = url;
+      });
+      const frame = document.createElement("div");
+      frame.className = "calib-frame";
+      const canvas = document.createElement("canvas");
+      frame.append(image, canvas);
+      elements.calibStage.replaceChildren(frame);
+      state.calibImage = image;
+      state.calibCanvas = canvas;
+      state.calibFrame = frame;
+      canvas.width = image.naturalWidth;
+      canvas.height = image.naturalHeight;
+      bindCalibrationEvents(canvas);
+      resetCalibrationView();
+      // 步骤文案、按钮换行都会改变画布可用高度，尺寸变化后按当前缩放重新适配。
+      if (state.calibResizeObserver) {
+        state.calibResizeObserver.disconnect();
+        state.calibResizeObserver = null;
+      }
+      if (typeof ResizeObserver === "function") {
+        state.calibResizeObserver = new ResizeObserver(() => {
+          if (!elements.configModal.hidden) applyCalibrationView();
+        });
+        state.calibResizeObserver.observe(elements.calibStage);
+      }
+    }
+
+    function setCalibBusy(busy) {
+      state.calibBusy = Boolean(busy);
+      const buttons = [
+        elements.calibCapture,
+        elements.calibFit,
+        elements.calibPrev,
+        elements.calibNext,
+        elements.calibClear,
+        elements.calibDefault,
+        elements.calibSave,
+      ];
+      for (const button of buttons) button.disabled = Boolean(busy);
+      if (!busy) updateCalibrationButtons();
+    }
+
+    async function captureCalibration() {
+      setCalibBusy(true);
+      setConfigBanner("正在截取微信主窗口…", "");
+      try {
+        const data = await request("/api/v1/config/ocr_calibration/capture", {
+          method: "POST",
+        });
+        state.calibrationCapture = data;
+        await loadCalibrationImage(data.image_url);
+        applyInitialCalibrationSelections();
+        state.calibStepIndex = 0;
+        renderCalib();
+        setConfigBanner(
+          `截图完成：微信窗口 ${data.window_width}x${data.window_height}` +
+            `${data.maximized ? "（最大化）" : ""}。按步骤选择区域后点击「保存标定」。`,
+          ""
+        );
+        clearError();
+      } catch (error) {
+        setConfigBanner(error.message, "warn");
+      } finally {
+        setCalibBusy(false);
+      }
+    }
+
+    function clampRatio(value) {
+      return Math.min(1, Math.max(0, value));
+    }
+
+    async function pickCalibrationColor(point) {
+      const step = currentCalibStep();
+      const chat = state.calibSelections.chat_box;
+      if (!chat || chat.type !== "rect" || !pointInBox(point, chat)) {
+        setConfigBanner("请先框选聊天区，并在聊天区内部取色。", "warn");
+        return;
+      }
+      const capture = state.calibrationCapture;
+      if (!capture) return;
+      try {
+        const data = await request("/api/v1/config/ocr_calibration/sample_color", {
+          method: "POST",
+          body: JSON.stringify({
+            capture_id: capture.capture_id,
+            x_ratio: clampRatio(point.x / capture.width),
+            y_ratio: clampRatio(point.y / capture.height),
+          }),
+        });
+        state.calibSelections[step.key] = {
+          type: "color",
+          x: point.x,
+          y: point.y,
+          rgb: data.rgb,
+          defaulted: false,
+        };
+        renderCalib();
+        setConfigBanner(`已取色：RGB(${data.rgb.join(", ")})`, "");
+        clearError();
+      } catch (error) {
+        setConfigBanner(error.message, "warn");
+      }
+    }
+
+    function useDefaultCalibrationColor() {
+      const step = currentCalibStep();
+      if (step.mode !== "color") return;
+      const colors = paletteSource();
+      if (!colors || !colors[step.key]) return;
+      const chat = state.calibSelections.chat_box;
+      const capture = state.calibrationCapture;
+      const x =
+        chat && chat.type === "rect"
+          ? (chat.left + chat.right) / 2
+          : capture
+            ? capture.width / 2
+            : 0;
+      const y =
+        chat && chat.type === "rect"
+          ? (chat.top + chat.bottom) / 2
+          : capture
+            ? capture.height / 2
+            : 0;
+      state.calibSelections[step.key] = {
+        type: "color",
+        x,
+        y,
+        rgb: colors[step.key].slice(),
+        defaulted: true,
+      };
+      renderCalib();
+    }
+
+    async function saveCalibration() {
+      const capture = state.calibrationCapture;
+      if (!capture) {
+        setConfigBanner("请先截图再保存标定。", "warn");
+        return;
+      }
+      const title = state.calibSelections.title_box;
+      const chat = state.calibSelections.chat_box;
+      const input = state.calibSelections.input_point;
+      if (
+        !title ||
+        title.type !== "rect" ||
+        !chat ||
+        chat.type !== "rect" ||
+        !input ||
+        input.type !== "point"
+      ) {
+        setConfigBanner("请完成标题区、聊天区和发送输入区三个标定项。", "warn");
+        return;
+      }
+      const palette = {};
+      for (const [key, name] of Object.entries(PALETTE_STEP_KEYS)) {
+        const picked = state.calibSelections[key];
+        if (!picked || picked.type !== "color") {
+          setConfigBanner("请完成三种底色的取色（页面 / 对方气泡 / 自己气泡）。", "warn");
+          return;
+        }
+        palette[name] = picked.rgb;
+      }
+      const width = capture.width;
+      const height = capture.height;
+      setCalibBusy(true);
+      try {
+        const data = await request("/api/v1/config/ocr_calibration", {
+          method: "PUT",
+          body: JSON.stringify({
+            capture_id: capture.capture_id,
+            title_box: [
+              title.left / width,
+              title.top / height,
+              title.right / width,
+              title.bottom / height,
+            ],
+            chat_box: [
+              chat.left / width,
+              chat.top / height,
+              chat.right / width,
+              chat.bottom / height,
+            ],
+            input_x_ratio: input.x / width,
+            input_y_ratio: input.y / height,
+            palette,
+          }),
+        });
+        state.calibration = {
+          ...state.calibration,
+          exists: true,
+          error: null,
+          calibration: data.calibration,
+        };
+        renderCalibrationStatus();
+        setConfigBanner("标定已保存，下次启动 OCR 监听时生效。", "ok");
+        clearError();
+      } catch (error) {
+        setConfigBanner(error.message, "warn");
+      } finally {
+        setCalibBusy(false);
+      }
+    }
+
     async function refreshAll() {
       if (state.refreshing) return;
       state.refreshing = true;
@@ -1523,8 +2704,40 @@
         loadLog();
       }
     });
+    elements.config.addEventListener("click", openConfig);
+    elements.configClose.addEventListener("click", closeConfig);
+    elements.configBackdrop.addEventListener("click", closeConfig);
+    elements.configTabCalibration.addEventListener("click", () => setConfigTab("calibration"));
+    elements.configTabApi.addEventListener("click", () => setConfigTab("api"));
+    elements.calibCapture.addEventListener("click", captureCalibration);
+    elements.calibFit.addEventListener("click", resetCalibrationView);
+    elements.calibPrev.addEventListener("click", () => {
+      if (state.calibStepIndex > 0) {
+        state.calibStepIndex -= 1;
+        renderCalib();
+      }
+    });
+    elements.calibNext.addEventListener("click", () => {
+      if (state.calibStepIndex < CALIBRATION_STEPS.length - 1) {
+        state.calibStepIndex += 1;
+        renderCalib();
+      }
+    });
+    elements.calibClear.addEventListener("click", () => {
+      delete state.calibSelections[currentCalibStep().key];
+      renderCalib();
+    });
+    elements.calibDefault.addEventListener("click", useDefaultCalibrationColor);
+    elements.calibSave.addEventListener("click", saveCalibration);
+    elements.configSave.addEventListener("click", saveConfig);
+    elements.configReset.addEventListener("click", resetConfigDefaults);
     document.addEventListener("keydown", event => {
-      if (event.key === "Escape" && !elements.logModal.hidden) closeLogs();
+      if (event.key !== "Escape") return;
+      if (!elements.configModal.hidden) {
+        closeConfig();
+        return;
+      }
+      if (!elements.logModal.hidden) closeLogs();
     });
 
     renderIcons();

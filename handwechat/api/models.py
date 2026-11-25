@@ -112,3 +112,80 @@ class SendTaskResponse(BaseModel):
     completed_at: Optional[str] = None
     error_code: Optional[str] = None
     error_message: Optional[str] = None
+
+
+class ConfigFieldSpec(BaseModel):
+    key: str
+    label: str
+    group: str
+    kind: str
+    minimum: Optional[float] = None
+    maximum: Optional[float] = None
+    step: Optional[float] = None
+    restart_required: bool = False
+    hint: str = ""
+
+
+class ApiConfigResponse(BaseModel):
+    path: str
+    exists: bool
+    error: Optional[str] = None
+    values: dict
+    defaults: dict
+    fields: list[ConfigFieldSpec] = Field(default_factory=list)
+
+
+class ApiConfigSaveRequest(BaseModel):
+    values: dict
+
+
+class ApiConfigSavedResponse(BaseModel):
+    saved: bool = True
+    path: str
+    values: dict
+    restart_required: bool
+
+
+class OcrCalibrationResponse(BaseModel):
+    path: str
+    exists: bool
+    error: Optional[str] = None
+    calibration: dict
+    defaults: dict
+
+
+class OcrCaptureResponse(BaseModel):
+    capture_id: str
+    width: int
+    height: int
+    window_width: int
+    window_height: int
+    maximized: bool
+    image_url: str
+
+
+class OcrColorSampleRequest(BaseModel):
+    capture_id: str
+    x_ratio: float = Field(ge=0.0, le=1.0)
+    y_ratio: float = Field(ge=0.0, le=1.0)
+
+
+class OcrColorSampleResponse(BaseModel):
+    rgb: list[int]
+    x: int
+    y: int
+
+
+class OcrCalibrationSaveRequest(BaseModel):
+    capture_id: str
+    title_box: list[float]
+    chat_box: list[float]
+    input_x_ratio: float
+    input_y_ratio: float
+    palette: dict
+
+
+class OcrCalibrationSavedResponse(BaseModel):
+    saved: bool = True
+    path: str
+    calibration: dict

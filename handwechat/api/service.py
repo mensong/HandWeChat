@@ -11,18 +11,28 @@ import ctypes
 import time
 import uuid
 from ctypes import wintypes
+from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, Optional
 
 from PIL import Image
 
-from handwechat.api.config import ApiConfig
+from handwechat.api.config import (
+    CONFIG_FIELDS,
+    ApiConfig,
+    config_field_specs,
+    save_api_config,
+)
 from handwechat.api.message_buffer import BufferedMessage, MessageBuffer
 from handwechat.api.send_tasks import SendTask, SendTaskStore
 from handwechat.errors import HWError, WeChatOfflineError
-from handwechat.ocr_calibration import OcrCalibration, load_ocr_calibration
-from handwechat.paths import app_data_path
+from handwechat.ocr_calibration import (
+    OcrCalibration,
+    load_ocr_calibration,
+    save_ocr_calibration,
+)
+from handwechat.paths import app_data_path, app_path
 from handwechat.sending import MAX_IMAGE_BYTES, SendPayload
 
 
@@ -36,6 +46,41 @@ class OcrChannelNotRunningError(HWError):
 
 class LogNotFoundError(HWError):
     """日志文件不存在或无法读取。"""
+
+
+class ListenerRunningError(HWError):
+    """OCR 监听运行中，不允许修改配置。"""
+
+    status = 409
+    code = "LISTENER_RUNNING"
+
+
+class InvalidConfigError(HWError):
+    """API 配置校验失败。"""
+
+    status = 400
+    code = "INVALID_CONFIG"
+
+
+class InvalidCalibrationError(HWError):
+    """OCR 标定校验失败。"""
+
+    status = 400
+    code = "INVALID_CALIBRATION"
+
+
+class CalibrationCaptureNotFoundError(HWError):
+    """标定截图不存在或已失效。"""
+
+    status = 404
+    code = "CAPTURE_NOT_FOUND"
+
+
+class CaptureBlockedError(HWError):
+    """微信窗口被其他窗口遮挡，无法截图。"""
+
+    status = 409
+    code = "CAPTURE_BLOCKED"
 
 
 class InvalidImageError(HWError):
@@ -152,6 +197,8 @@ class ApiService:
         self._ocr_channel: Optional[object] = None
         self._ocr_lock = threading.RLock()
         self._last_error: Optional[str] = None
+        self._calibration_capture: Optional[dict] = None
+        self._capture_lock = threading.Lock()
 
     @property
     def ocr_channel(self) -> Optional[object]:
@@ -312,6 +359,181 @@ class ApiService:
         if channel is None:
             return {"cleared": 0}
         return {"cleared": channel.clear_history()}
+
+    def listener_running(self) -> bool:
+        channel = self.ocr_channel
+        return bool(channel is not None and channel.running)
+
+    def _require_listener_stopped(self) -> None:
+        if self.listener_running():
+            raise ListenerRunningError("OCR 监听运行中，请先停止监听再修改配置")
+
+    # -- 配置 ---------------------------------------------------------------
+
+    def get_config(self) -> dict:
+        path = app_data_path("api_config.json")
+        exists = path.exists()
+        values = ApiConfig()
+        error = None
+        if exists:
+            try:
+                values = ApiConfig.load(path)
+            except (OSError, ValueError) as exc:
+                error = f"配置文件读取失败，当前显示默认值：{exc}"
+        return {
+            "path": str(path),
+            "exists": exists,
+            "error": error,
+            "values": values.to_dict(),
+            "defaults": ApiConfig().to_dict(),
+            "fields": config_field_specs(),
+        }
+
+    def save_config(self, values: dict) -> dict:
+        self._require_listener_stopped()
+        path = app_data_path("api_config.json")
+        before = asdict(self.config)
+        try:
+            config = save_api_config(path, values)
+        except ValueError as exc:
+            raise InvalidConfigError(str(exc)) from exc
+        saved_values = config.to_dict()
+        config.log_dir = str(app_path(config.log_dir))
+        self.config.__dict__.update(asdict(config))
+        after = asdict(config)
+        restart_required = any(
+            field.restart_required and before.get(field.key) != after.get(field.key)
+            for field in CONFIG_FIELDS
+        )
+        return {
+            "saved": True,
+            "path": str(path),
+            "values": saved_values,
+            "restart_required": restart_required,
+        }
+
+    # -- OCR 区域标定 -------------------------------------------------------
+
+    def get_ocr_calibration(self) -> dict:
+        path = app_data_path("ocr_calibration.json")
+        exists = path.exists()
+        error = None
+        try:
+            calibration = load_ocr_calibration(path)
+        except (OSError, ValueError) as exc:
+            calibration = OcrCalibration()
+            error = f"标定文件读取失败，当前显示默认值：{exc}"
+        return {
+            "path": str(path),
+            "exists": exists,
+            "error": error,
+            "calibration": calibration.to_dict(),
+            "defaults": OcrCalibration().to_dict(),
+        }
+
+    def capture_ocr_screenshot(self) -> dict:
+        self._require_listener_stopped()
+        from handwechat.ocr_capture import (
+            WindowCoveredError,
+            capture_wechat_screenshot,
+        )
+
+        try:
+            capture = capture_wechat_screenshot()
+        except WindowCoveredError as exc:
+            raise CaptureBlockedError(str(exc)) from exc
+        except RuntimeError as exc:
+            raise WeChatOfflineError(str(exc)) from exc
+        buffer = io.BytesIO()
+        capture.image.save(buffer, format="PNG")
+        capture_id = uuid.uuid4().hex
+        with self._capture_lock:
+            self._calibration_capture = {
+                "id": capture_id,
+                "image": capture.image,
+                "png": buffer.getvalue(),
+                "window_width": capture.window_width,
+                "window_height": capture.window_height,
+                "maximized": capture.maximized,
+            }
+        return {
+            "capture_id": capture_id,
+            "width": capture.image.width,
+            "height": capture.image.height,
+            "window_width": capture.window_width,
+            "window_height": capture.window_height,
+            "maximized": capture.maximized,
+            "image_url": f"/api/v1/config/ocr_calibration/capture/{capture_id}",
+        }
+
+    def _require_capture(self, capture_id: str) -> dict:
+        with self._capture_lock:
+            entry = self._calibration_capture
+        if entry is None or entry["id"] != capture_id:
+            raise CalibrationCaptureNotFoundError("标定截图已失效，请重新截图")
+        return entry
+
+    def capture_image(self, capture_id: str) -> bytes:
+        return self._require_capture(capture_id)["png"]
+
+    def sample_ocr_color(
+        self, capture_id: str, x_ratio: float, y_ratio: float
+    ) -> dict:
+        entry = self._require_capture(capture_id)
+        image = entry["image"]
+        px = min(max(0, int(round(x_ratio * image.width))), image.width - 1)
+        py = min(max(0, int(round(y_ratio * image.height))), image.height - 1)
+        color = image.getpixel((px, py))
+        if not isinstance(color, tuple) or len(color) < 3:
+            raise InvalidCalibrationError("无法读取该点颜色，请重新点击")
+        return {
+            "rgb": [int(color[0]), int(color[1]), int(color[2])],
+            "x": px,
+            "y": py,
+        }
+
+    def save_ocr_calibration(
+        self,
+        capture_id: str,
+        *,
+        title_box: list[float],
+        chat_box: list[float],
+        input_x_ratio: float,
+        input_y_ratio: float,
+        palette: dict,
+    ) -> dict:
+        self._require_listener_stopped()
+        entry = self._require_capture(capture_id)
+        if not palette:
+            raise InvalidCalibrationError("缺少三种底色的取色结果")
+        payload = {
+            "version": 3,
+            "input_x_ratio": input_x_ratio,
+            "input_y_ratio": input_y_ratio,
+            "title_box": list(title_box),
+            "chat_box": list(chat_box),
+            "window_size": [entry["window_width"], entry["window_height"]],
+            "window_maximized": entry["maximized"],
+            "palette": palette,
+        }
+        try:
+            calibration = OcrCalibration.from_dict(payload)
+        except ValueError as exc:
+            raise InvalidCalibrationError(str(exc)) from exc
+        if calibration.palette is not None:
+            problem = calibration.palette.distance_problem()
+            if problem:
+                raise InvalidCalibrationError(problem)
+        path = app_data_path("ocr_calibration.json")
+        try:
+            save_ocr_calibration(calibration, path)
+        except OSError as exc:
+            raise InvalidCalibrationError(f"标定文件写入失败：{exc}") from exc
+        return {
+            "saved": True,
+            "path": str(path),
+            "calibration": calibration.to_dict(),
+        }
 
     def send(self, text: str) -> SendTask:
         channel = self._require_ocr_channel()
