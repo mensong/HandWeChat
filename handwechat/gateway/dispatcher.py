@@ -18,11 +18,13 @@ from handwechat.gateway.models import (
     OfferTimeout,
     OfferUnavailable,
     PinState,
+    now_iso,
 )
 from handwechat.gateway.pin import PinManager
 from handwechat.gateway.registry import AppRegistry, AppRuntime
 from handwechat.gateway.response import ResponseError, ResponseState
 from handwechat.gateway.rules import matches as rules_match
+from handwechat.gateway.trace import MessageLog, clip
 
 logger = logging.getLogger("handwechat.gateway")
 
@@ -47,6 +49,30 @@ class GatewayStats:
     pin_expired: int = 0
 
 
+def _new_step(app: AppRuntime, message: IncomingMessage, pinned: bool) -> dict:
+    return {
+        "app_id": app.id,
+        "name": app.name,
+        "system": app.system,
+        "priority": app.priority,
+        "pinned": pinned,
+        "input": _content_of(message),
+        "output": None,
+        "result": "",
+        "extra_changed": False,
+        "response_items": 0,
+        "elapsed_ms": 0.0,
+    }
+
+
+def _content_of(message: IncomingMessage) -> dict:
+    return {"content": clip(message.content), "sender": message.sender}
+
+
+def _elapsed_ms(started: float, now: float) -> float:
+    return round((now - started) * 1000.0, 2)
+
+
 class Dispatcher:
     """单协程消费队列，保证一条消息完整走完顺序后才处理下一条。"""
 
@@ -63,6 +89,7 @@ class Dispatcher:
         queue: asyncio.Queue | None = None,
         now: Callable[[], float] = time.monotonic,
         context_provider: Callable[[], dict] | None = None,
+        message_log: MessageLog | None = None,
     ) -> None:
         self.registry = registry
         self.pin_manager = pin_manager
@@ -75,6 +102,7 @@ class Dispatcher:
         self._notify_pin_expired = notify_pin_expired
         self._now = now
         self._context_provider = context_provider
+        self.message_log = message_log
         self._pin_token = 0
         self._pin_task: asyncio.Task | None = None
 
@@ -117,12 +145,17 @@ class Dispatcher:
             max_total_bytes=config.max_response_total_bytes,
         )
         asked: set[str] = set()
+        steps: list[dict] = []
+        initial_candidates: list[str] = []
 
         while True:
             now = self._now()
             candidates = self._candidates(
                 now, working, chat_title, chat_type, active_pin, asked
             )
+            if candidates and not initial_candidates:
+                initial_candidates = [item.id for item in candidates]
+
             if not candidates:
                 self.stats.unconsumed += 1
                 outcome.elapsed_ms = (now - started) * 1000.0
@@ -133,6 +166,19 @@ class Dispatcher:
                     candidates=[],
                     chat=chat_title,
                     original_content=original_content,
+                    response_items=response.count,
+                )
+                self._record_trace(
+                    message,
+                    outcome,
+                    chat=chat_title,
+                    chat_type=chat_type,
+                    original_content=original_content,
+                    final_content=working.content,
+                    steps=steps,
+                    candidates=initial_candidates,
+                    reason="no_app",
+                    reply=None,
                     response_items=response.count,
                 )
                 return outcome
@@ -150,6 +196,9 @@ class Dispatcher:
             app.offers += 1
             outcome.tried.append(app.id)
             asked.add(app.id)
+
+            step_started = self._now()
+            step = _new_step(app, working, pinned)
 
             try:
                 decision, offer_id = await self._offer(
@@ -170,6 +219,9 @@ class Dispatcher:
                     now=self._now(),
                     error=str(exc),
                 )
+                step["result"] = "timeout"
+                step["elapsed_ms"] = _elapsed_ms(step_started, self._now())
+                steps.append(step)
                 continue
             except OfferUnavailable as exc:
                 self.stats.unavailable += 1
@@ -179,9 +231,13 @@ class Dispatcher:
                     now=self._now(),
                     error=str(exc),
                 )
+                step["result"] = "unavailable"
+                step["elapsed_ms"] = _elapsed_ms(step_started, self._now())
+                steps.append(step)
                 continue
 
             app.record_success()
+            step["response_items"] = len(decision.response or [])
             if decision.action == "consume":
                 app.consumes += 1
                 self.stats.consumed += 1
@@ -190,9 +246,23 @@ class Dispatcher:
                 self._apply_response(
                     app, response, decision, working.dispatch_id
                 )
+                step["result"] = "consume"
+                step["output"] = _content_of(working)
+                step["elapsed_ms"] = _elapsed_ms(step_started, self._now())
+                steps.append(step)
                 parts = response.final_parts()
+                reply: dict = {"parts": 0, "text": ""}
                 if parts:
                     await self._send(app, parts, working, offer_id)
+                    texts = [
+                        str(part.get("text") or "")
+                        for part in parts
+                        if part.get("text")
+                    ]
+                    reply = {
+                        "parts": len(parts),
+                        "text": clip(" / ".join(texts)),
+                    }
                 else:
                     self._log(
                         "reply_summary",
@@ -212,12 +282,41 @@ class Dispatcher:
                     original_content=original_content,
                     response_items=response.count,
                 )
+                self._record_trace(
+                    message,
+                    outcome,
+                    chat=chat_title,
+                    chat_type=chat_type,
+                    original_content=original_content,
+                    final_content=working.content,
+                    steps=steps,
+                    candidates=initial_candidates,
+                    reason="",
+                    reply=reply,
+                    response_items=response.count,
+                )
                 return outcome
 
             app.rewrites += 1
             self.stats.rewrites += 1
             outcome.rewritten_by.append(app.id)
-            working = self._apply_message(app, decision, working)
+            updated = self._apply_message(app, decision, working)
+            ignored = not app.config.can_rewrite and (
+                decision.content is not None
+                or decision.sender is not None
+                or decision.extra is not None
+            )
+            if ignored:
+                step["result"] = "rewrite_ignored"
+            elif updated is not working:
+                step["result"] = "rewrite"
+            else:
+                step["result"] = "rewrite_noop"
+            step["output"] = _content_of(updated)
+            step["extra_changed"] = updated.extra != working.extra
+            step["elapsed_ms"] = _elapsed_ms(step_started, self._now())
+            steps.append(step)
+            working = updated
             self._apply_response(
                 app, response, decision, working.dispatch_id
             )
@@ -232,7 +331,61 @@ class Dispatcher:
             original_content=original_content,
             response_items=response.count,
         )
+        self._record_trace(
+            message,
+            outcome,
+            chat=chat_title,
+            chat_type=chat_type,
+            original_content=original_content,
+            final_content=working.content,
+            steps=steps,
+            candidates=initial_candidates,
+            reason="deadline",
+            reply=None,
+            response_items=response.count,
+        )
         return outcome
+
+    def _record_trace(
+        self,
+        message: IncomingMessage,
+        outcome: DispatchOutcome,
+        *,
+        chat: str,
+        chat_type: str | None,
+        original_content: str,
+        final_content: str,
+        steps: list[dict],
+        candidates: list[str],
+        reason: str,
+        reply: dict | None,
+        response_items: int,
+    ) -> None:
+        if self.message_log is None:
+            return
+        self.message_log.add(
+            {
+                "id": message.dispatch_id or message.id,
+                "message_id": message.id,
+                "received_at": message.received_at,
+                "recorded_at": now_iso(),
+                "sender": message.sender,
+                "chat": chat,
+                "chat_type": chat_type,
+                "content": clip(original_content),
+                "final_content": clip(final_content),
+                "consumed_by": outcome.consumed_by,
+                "reason": reason,
+                "tried": list(outcome.tried),
+                "timed_out": list(outcome.timed_out),
+                "rewritten_by": list(outcome.rewritten_by),
+                "candidates": list(candidates),
+                "steps": steps,
+                "reply": reply,
+                "response_items": response_items,
+                "elapsed_ms": round(outcome.elapsed_ms, 2),
+            }
+        )
 
     def on_config_changed(self) -> None:
         """配置热加载后，置顶应用被移除或禁用时立即撤销置顶。"""

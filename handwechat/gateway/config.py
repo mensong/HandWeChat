@@ -52,6 +52,7 @@ class GatewayConfig:
     max_response_images: int = 5
     max_response_image_bytes: int = 1024 * 1024
     max_response_total_bytes: int = 5 * 1024 * 1024
+    admin_token: str = ""
     system_apps: list[GatewayAppConfig] = field(default_factory=list)
     apps: list[GatewayAppConfig] = field(default_factory=list)
 
@@ -60,7 +61,10 @@ class GatewayConfig:
         path = Path(path)
         if not path.exists():
             return cls()
-        data = json.loads(path.read_text(encoding="utf-8"))
+        return cls.from_dict(json.loads(path.read_text(encoding="utf-8")))
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "GatewayConfig":
         if not isinstance(data, dict):
             raise ValueError("网关配置必须是 JSON 对象")
 
@@ -131,6 +135,7 @@ class GatewayConfig:
                     data.get("max_response_total_bytes"), 5 * 1024 * 1024
                 ),
             ),
+            admin_token=str(data.get("admin_token") or ""),
             system_apps=system_apps,
             apps=apps,
         )
@@ -186,8 +191,19 @@ def _parse_apps(value, label: str) -> list[GatewayAppConfig]:
     for item in value:
         if not isinstance(item, dict):
             raise ValueError(f"{label} 中的每一项必须是对象")
-        apps.append(_parse_app(item))
+        apps.append(parse_app(item))
     return apps
+
+
+def parse_app(data: dict) -> GatewayAppConfig:
+    """解析单个应用配置项；配置文件与管理接口共用同一套校验。"""
+
+    if not isinstance(data, dict):
+        raise ValueError("应用配置必须是对象")
+    app_id = str(data.get("id") or "").strip()
+    if not app_id:
+        raise ValueError("应用 id 不能为空")
+    return _parse_app(data)
 
 
 def _parse_app(data: dict) -> GatewayAppConfig:

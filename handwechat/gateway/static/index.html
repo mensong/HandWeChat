@@ -1,0 +1,1561 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>HandWeChat 网关管理</title>
+  <script src="/static/lucide.min.js"></script>
+  <style>
+    :root {
+      color-scheme: light;
+      --background: #f5f6f8;
+      --surface: #ffffff;
+      --surface-muted: #eef1f4;
+      --border: #d8dee5;
+      --text: #1d252c;
+      --text-muted: #657180;
+      --accent: #176b56;
+      --accent-soft: #e3f2ed;
+      --danger: #a4262c;
+      --danger-soft: #fbe9e9;
+      --warning: #915c00;
+      --warning-soft: #fdf3e0;
+      --ok: #1a7f4b;
+      --ok-soft: #e4f4ea;
+      --shadow: 0 8px 24px rgba(25, 35, 44, 0.08);
+      font-family: "Segoe UI", "Microsoft YaHei", Arial, sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    [hidden] { display: none !important; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--background);
+      color: var(--text);
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    button, input, select, textarea { font: inherit; color: inherit; }
+
+    .app {
+      max-width: 1240px;
+      margin: 0 auto;
+      padding: 20px 20px 40px;
+      display: grid;
+      gap: 16px;
+      min-height: 100vh;
+      align-content: start;
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+
+    .brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
+
+    .brand-mark {
+      width: 36px; height: 36px;
+      display: grid; place-items: center;
+      border-radius: 9px;
+      background: var(--accent);
+      color: #fff;
+      flex: none;
+    }
+
+    .brand-mark svg { width: 20px; height: 20px; }
+
+    h1 { margin: 0; font-size: 19px; font-weight: 700; }
+
+    .brand small { color: var(--text-muted); font-size: 12px; }
+
+    .header-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+    .pill {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 5px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 600;
+      background: var(--surface-muted);
+      color: var(--text-muted);
+      border: 1px solid transparent;
+    }
+
+    .pill::before {
+      content: "";
+      width: 7px; height: 7px; border-radius: 50%;
+      background: currentColor;
+      opacity: .8;
+    }
+
+    .pill.ok { background: var(--ok-soft); color: var(--ok); }
+    .pill.warn { background: var(--warning-soft); color: var(--warning); }
+    .pill.bad { background: var(--danger-soft); color: var(--danger); }
+
+    .btn {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 6px 12px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      cursor: pointer;
+      white-space: nowrap;
+      transition: background .12s ease, border-color .12s ease;
+    }
+
+    .btn:hover { background: var(--surface-muted); }
+    .btn svg { width: 15px; height: 15px; }
+
+    .btn.primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+      font-weight: 600;
+    }
+
+    .btn.primary:hover { background: #125844; }
+
+    .btn.danger { color: var(--danger); border-color: #e6b8ba; }
+    .btn.danger:hover { background: var(--danger-soft); }
+
+    .btn.ghost { background: transparent; }
+    .btn.icon { padding: 6px; }
+
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .tile {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 12px 14px;
+      box-shadow: var(--shadow);
+      min-width: 0;
+    }
+
+    .tile .label {
+      font-size: 12px;
+      color: var(--text-muted);
+      display: flex; align-items: center; gap: 6px;
+    }
+
+    .tile .label svg { width: 14px; height: 14px; }
+    .tile .value { font-size: 18px; font-weight: 700; margin-top: 4px; }
+    .tile .sub { font-size: 12px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+    .panel {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .panel-head {
+      display: flex; align-items: flex-end; justify-content: space-between;
+      gap: 12px; padding: 14px 16px;
+      border-bottom: 1px solid var(--border);
+      flex-wrap: wrap;
+    }
+
+    .panel-head h2 { margin: 0; font-size: 16px; }
+    .panel-head .hint { margin: 2px 0 0; color: var(--text-muted); font-size: 12px; }
+    .panel-actions { display: flex; gap: 8px; align-items: center; }
+
+    .search { position: relative; }
+
+    .search input {
+      width: 210px;
+      padding: 7px 10px 7px 30px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      outline: none;
+    }
+
+    .search input:focus { border-color: var(--accent); }
+    .search svg {
+      position: absolute; left: 9px; top: 50%;
+      width: 14px; height: 14px;
+      transform: translateY(-50%);
+      color: var(--text-muted);
+    }
+
+    .table-wrap { overflow-x: auto; }
+
+    table { width: 100%; border-collapse: collapse; min-width: 960px; }
+
+    thead th {
+      text-align: left;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-muted);
+      background: var(--surface-muted);
+      padding: 8px 12px;
+      white-space: nowrap;
+    }
+
+    tbody td {
+      padding: 10px 12px;
+      border-top: 1px solid var(--border);
+      vertical-align: middle;
+    }
+
+    tbody tr:hover { background: #fafbfc; }
+
+    .order {
+      font-variant-numeric: tabular-nums;
+      color: var(--text-muted);
+      width: 44px;
+    }
+
+    .app-name { font-weight: 600; }
+    .app-id {
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 2px 7px;
+      border-radius: 6px;
+      font-size: 11px;
+      font-weight: 600;
+      background: var(--surface-muted);
+      color: var(--text-muted);
+    }
+
+    .badge.system { background: var(--warning-soft); color: var(--warning); }
+    .badge.on { background: var(--ok-soft); color: var(--ok); }
+    .badge.off { background: var(--danger-soft); color: var(--danger); }
+    .badge.disabled { background: var(--surface-muted); color: var(--text-muted); }
+
+    .rules {
+      font-size: 12px;
+      color: var(--text-muted);
+      max-width: 260px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .nums { font-variant-numeric: tabular-nums; font-size: 12px; color: var(--text-muted); }
+    .nums b { color: var(--text); font-weight: 600; }
+
+    .row-actions { display: flex; gap: 6px; justify-content: flex-end; }
+
+    .empty {
+      padding: 42px 16px;
+      text-align: center;
+      color: var(--text-muted);
+    }
+
+    .empty svg { width: 28px; height: 28px; opacity: .5; margin-bottom: 6px; }
+    .empty p { margin: 0; }
+
+    .drawer {
+      position: fixed;
+      top: 0; right: 0;
+      height: 100vh;
+      width: 440px;
+      max-width: 100vw;
+      background: var(--surface);
+      border-left: 1px solid var(--border);
+      box-shadow: -12px 0 32px rgba(25, 35, 44, .12);
+      transform: translateX(102%);
+      transition: transform .18s ease;
+      display: flex;
+      flex-direction: column;
+      z-index: 20;
+    }
+
+    .drawer.open { transform: translateX(0); }
+
+    .drawer-head {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 16px 18px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .drawer-head h2 { margin: 0; font-size: 16px; }
+
+    .drawer-body { padding: 16px 18px; overflow-y: auto; flex: 1; }
+
+    .field { margin-bottom: 14px; }
+
+    .field label {
+      display: flex; align-items: center; gap: 6px;
+      font-size: 12px; font-weight: 600;
+      color: var(--text-muted);
+      margin-bottom: 5px;
+    }
+
+    .field input[type="text"],
+    .field input[type="number"],
+    .field input[type="password"],
+    .field select,
+    .field textarea {
+      width: 100%;
+      padding: 7px 10px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--surface);
+      outline: none;
+    }
+
+    .field input:focus, .field select:focus, .field textarea:focus { border-color: var(--accent); }
+    .field input:disabled { background: var(--surface-muted); color: var(--text-muted); }
+
+    .field textarea {
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 12px;
+      min-height: 110px;
+      resize: vertical;
+    }
+
+    .field .tip { font-size: 11px; color: var(--text-muted); margin-top: 4px; }
+
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+
+    .checks { display: flex; gap: 18px; flex-wrap: wrap; }
+
+    .check {
+      display: inline-flex; align-items: center; gap: 6px;
+      font-size: 13px;
+    }
+
+    .check input { width: 15px; height: 15px; accent-color: var(--accent); }
+
+    .drawer-foot {
+      padding: 12px 18px;
+      border-top: 1px solid var(--border);
+      display: flex; justify-content: flex-end; gap: 8px;
+    }
+
+    .scrim {
+      position: fixed; inset: 0;
+      background: rgba(20, 28, 34, .28);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity .18s ease;
+      z-index: 10;
+    }
+
+    .scrim.show { opacity: 1; pointer-events: auto; }
+
+    dialog {
+      border: none;
+      border-radius: 12px;
+      padding: 0;
+      width: 420px;
+      max-width: calc(100vw - 32px);
+      box-shadow: 0 18px 48px rgba(20, 28, 34, .24);
+    }
+
+    dialog::backdrop { background: rgba(20, 28, 34, .32); }
+
+    .dialog-body { padding: 18px; }
+    .dialog-body h3 { margin: 0 0 6px; font-size: 16px; }
+    .dialog-body p { margin: 0 0 12px; color: var(--text-muted); font-size: 13px; }
+
+    .dialog-foot {
+      padding: 12px 18px;
+      border-top: 1px solid var(--border);
+      display: flex; justify-content: flex-end; gap: 8px;
+    }
+
+    .secret {
+      display: flex; gap: 8px; align-items: center;
+      background: var(--surface-muted);
+      border-radius: 8px;
+      padding: 10px 12px;
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 13px;
+      word-break: break-all;
+    }
+
+    .toasts {
+      position: fixed;
+      right: 18px; bottom: 18px;
+      display: flex; flex-direction: column; gap: 8px;
+      z-index: 40;
+    }
+
+    .toast {
+      background: #1d252c;
+      color: #fff;
+      padding: 9px 14px;
+      border-radius: 8px;
+      font-size: 13px;
+      box-shadow: var(--shadow);
+      max-width: 360px;
+    }
+
+    .toast.bad { background: var(--danger); }
+    .toast.ok { background: var(--ok); }
+
+    .footnote { color: var(--text-muted); font-size: 12px; text-align: center; }
+    .footnote a { color: var(--accent); }
+
+    .tabs { display: flex; gap: 6px; }
+
+    .tab {
+      padding: 6px 14px;
+      border-radius: 8px;
+      border: 1px solid transparent;
+      background: transparent;
+      color: var(--text-muted);
+      cursor: pointer;
+      font-weight: 600;
+    }
+
+    .tab:hover { background: var(--surface-muted); }
+    .tab.active {
+      background: var(--surface);
+      border-color: var(--border);
+      color: var(--text);
+      box-shadow: var(--shadow);
+    }
+
+    .view { display: grid; gap: 16px; }
+    .view[hidden] { display: none; }
+
+    .messages-table { min-width: 820px; }
+    .messages-table tbody tr { cursor: pointer; }
+    .messages-table .content-cell {
+      max-width: 340px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .time-cell {
+      white-space: nowrap;
+      color: var(--text-muted);
+      font-size: 12px;
+      font-variant-numeric: tabular-nums;
+    }
+    .route { font-size: 12px; color: var(--text-muted); }
+
+    .trace-panel {
+      position: fixed;
+      top: 0; right: 0;
+      height: 100vh;
+      width: 640px;
+      max-width: 100vw;
+      background: var(--surface);
+      border-left: 1px solid var(--border);
+      box-shadow: -12px 0 32px rgba(25, 35, 44, .16);
+      transform: translateX(102%);
+      transition: transform .18s ease;
+      display: flex;
+      flex-direction: column;
+      z-index: 22;
+    }
+
+    .trace-panel.open { transform: translateX(0); }
+
+    .trace-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      margin-bottom: 12px;
+    }
+
+    .trace-meta .meta {
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    .flow-card {
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px 12px;
+      background: var(--surface);
+    }
+
+    .flow-card.accent { border-color: #bcd8cf; background: #f6fbf9; }
+    .flow-card.bad { border-color: #e6b8ba; background: #fdf7f7; }
+
+    .flow-label {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-muted);
+      letter-spacing: .04em;
+      margin-bottom: 4px;
+    }
+
+    .flow-text {
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-size: 13px;
+    }
+
+    .flow-text.mono {
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 12px;
+    }
+
+    .timeline {
+      position: relative;
+      margin: 16px 0;
+      padding-left: 22px;
+    }
+
+    .timeline::before {
+      content: "";
+      position: absolute;
+      left: 6px; top: 8px; bottom: 8px;
+      width: 2px;
+      background: var(--border);
+    }
+
+    .step { position: relative; margin-bottom: 16px; }
+
+    .step::before {
+      content: "";
+      position: absolute;
+      left: -21px; top: 7px;
+      width: 10px; height: 10px;
+      border-radius: 50%;
+      background: var(--surface);
+      border: 2px solid var(--border);
+    }
+
+    .step.consume::before { border-color: var(--ok); background: var(--ok); }
+    .step.rewrite::before { border-color: var(--accent); background: var(--accent); }
+    .step.warn::before { border-color: var(--warning); background: var(--warning); }
+    .step.bad::before { border-color: var(--danger); background: var(--danger); }
+
+    .step-head {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .step-name { font-weight: 600; }
+    .step-meta { font-size: 12px; color: var(--text-muted); }
+
+    .content-box {
+      margin-top: 6px;
+      background: var(--surface-muted);
+      border-radius: 8px;
+      padding: 8px 10px;
+      font-size: 13px;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .content-box .box-tag {
+      display: block;
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-bottom: 2px;
+    }
+
+    del { background: #fbe9e9; color: #8a1f24; }
+    ins { background: #e4f4ea; color: #14653c; text-decoration: none; }
+
+    .flow-result { margin-top: 16px; }
+
+    .skip-row {
+      margin-top: 10px;
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    @media (max-width: 700px) {
+      .trace-panel { width: 100vw; }
+    }
+
+    @media (max-width: 1000px) {
+      table { min-width: 680px; }
+      thead th:nth-child(7), tbody td:nth-child(7),
+      thead th:nth-child(8), tbody td:nth-child(8) { display: none; }
+      .rules { max-width: 180px; }
+    }
+
+    @media (max-width: 900px) {
+      .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .search input { width: 150px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header>
+      <div class="brand">
+        <div class="brand-mark"><i data-lucide="waypoints"></i></div>
+        <div>
+          <h1>网关管理</h1>
+          <small id="gateway-addr">HandWeChat 消息网关</small>
+        </div>
+      </div>
+      <div class="header-actions">
+        <span class="pill" id="upstream-pill">上游状态获取中</span>
+        <button class="btn ghost" id="token-button">
+          <i data-lucide="key-round"></i><span id="token-label">设置管理令牌</span>
+        </button>
+        <button class="btn icon" id="refresh-button" title="立即刷新"><i data-lucide="refresh-cw"></i></button>
+      </div>
+    </header>
+
+    <nav class="tabs">
+      <button class="tab active" data-view="apps">应用</button>
+      <button class="tab" data-view="messages">消息日志</button>
+    </nav>
+
+    <section class="view" id="view-apps">
+    <section class="stats">
+      <div class="tile">
+        <div class="label"><i data-lucide="plug"></i>上游连接</div>
+        <div class="value" id="stat-upstream">-</div>
+        <div class="sub" id="stat-upstream-sub">-</div>
+      </div>
+      <div class="tile">
+        <div class="label"><i data-lucide="layers"></i>消息队列</div>
+        <div class="value" id="stat-queue">-</div>
+        <div class="sub" id="stat-queue-sub">-</div>
+      </div>
+      <div class="tile">
+        <div class="label"><i data-lucide="pin"></i>置顶</div>
+        <div class="value" id="stat-pin">无</div>
+        <div class="sub" id="stat-pin-sub">当前没有应用置顶</div>
+      </div>
+      <div class="tile">
+        <div class="label"><i data-lucide="users"></i>应用连接</div>
+        <div class="value" id="stat-apps">-</div>
+        <div class="sub" id="stat-apps-sub">-</div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <div>
+          <h2>应用</h2>
+          <p class="hint">按询问顺序排列：系统应用在前，其后按 priority 升序。</p>
+        </div>
+        <div class="panel-actions">
+          <div class="search">
+            <i data-lucide="search"></i>
+            <input id="filter" type="text" placeholder="搜索 id 或名称">
+          </div>
+          <button class="btn primary" id="register-button"><i data-lucide="plus"></i>注册应用</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table id="apps-table">
+          <thead>
+            <tr>
+              <th class="order">#</th>
+              <th>应用</th>
+              <th>区</th>
+              <th>优先级</th>
+              <th>连接</th>
+              <th>规则</th>
+              <th>超时 / 置顶</th>
+              <th>调度</th>
+              <th style="text-align:right">操作</th>
+            </tr>
+          </thead>
+          <tbody id="apps-body"></tbody>
+        </table>
+        <div class="empty" id="empty-state" hidden>
+          <i data-lucide="inbox"></i>
+          <p>还没有登记应用，点右上角「注册应用」开始。</p>
+        </div>
+      </div>
+    </section>
+    </section>
+
+    <section class="view" id="view-messages" hidden>
+      <section class="panel">
+        <div class="panel-head">
+          <div>
+            <h2>消息日志</h2>
+            <p class="hint">内存保留最近 200 条，网关重启后清空；点击一行查看消息经过了哪些应用。</p>
+          </div>
+          <div class="panel-actions">
+            <span class="pill" id="messages-count">0 条</span>
+            <button class="btn" id="messages-refresh"><i data-lucide="refresh-cw"></i>刷新</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="messages-table">
+            <thead>
+              <tr>
+                <th>时间</th>
+                <th>发送者</th>
+                <th>内容</th>
+                <th>处理</th>
+                <th>耗时</th>
+                <th>途经</th>
+              </tr>
+            </thead>
+            <tbody id="messages-body"></tbody>
+          </table>
+          <div class="empty" id="messages-empty" hidden>
+            <i data-lucide="scroll-text"></i>
+            <p id="messages-empty-text">还没有消息。网关收到消息后会出现在这里。</p>
+          </div>
+        </div>
+      </section>
+    </section>
+
+    <p class="footnote">
+      管理接口需 <code>X-Admin-Token</code>；完整的 HTTP 接口见 <a href="/docs" target="_blank" rel="noopener">/docs</a>。
+    </p>
+  </div>
+
+  <div class="scrim" id="scrim"></div>
+
+  <aside class="drawer" id="drawer" aria-hidden="true">
+    <div class="drawer-head">
+      <h2 id="drawer-title">注册应用</h2>
+      <button class="btn icon ghost" id="drawer-close" title="关闭"><i data-lucide="x"></i></button>
+    </div>
+    <form class="drawer-body" id="app-form">
+      <div class="field">
+        <label for="field-id">应用 id</label>
+        <input id="field-id" type="text" autocomplete="off" placeholder="checkin">
+        <div class="tip">hello 握手时使用；在系统区与普通区之间不能重复。</div>
+      </div>
+      <div class="field">
+        <label for="field-name">显示名</label>
+        <input id="field-name" type="text" autocomplete="off" placeholder="签到">
+      </div>
+      <div class="grid-2">
+        <div class="field">
+          <label for="field-priority">优先级</label>
+          <input id="field-priority" type="number" value="10">
+          <div class="tip">数值越小越先询问。</div>
+        </div>
+        <div class="field">
+          <label for="field-zone">分区</label>
+          <select id="field-zone">
+            <option value="false">普通应用</option>
+            <option value="true">系统应用</option>
+          </select>
+        </div>
+      </div>
+      <div class="grid-2">
+        <div class="field">
+          <label for="field-timeout">单次超时 (ms)</label>
+          <input id="field-timeout" type="number" value="800">
+        </div>
+        <div class="field">
+          <label for="field-hold">置顶时长 (秒)</label>
+          <input id="field-hold" type="number" value="120">
+        </div>
+      </div>
+      <div class="checks" style="margin-bottom:14px">
+        <label class="check"><input type="checkbox" id="field-enabled" checked>启用</label>
+        <label class="check"><input type="checkbox" id="field-rewrite">允许改写</label>
+      </div>
+      <div class="field">
+        <label for="field-token">应用令牌</label>
+        <input id="field-token" type="text" autocomplete="off" placeholder="留空由网关生成">
+        <div class="tip" id="token-tip">留空时网关生成随机令牌，只在注册响应里返回一次。</div>
+        <label class="check" id="clear-token-wrap" hidden style="margin-top:6px">
+          <input type="checkbox" id="field-clear-token">清空该应用的令牌
+        </label>
+      </div>
+      <div class="field">
+        <label for="field-groups">可用群</label>
+        <input id="field-groups" type="text" autocomplete="off" placeholder="公司群, 测试群">
+        <div class="tip">逗号分隔；留空表示所有群生效。</div>
+      </div>
+      <div class="field">
+        <label for="field-rules">匹配规则 (JSON)</label>
+        <textarea id="field-rules" spellcheck="false" placeholder='[{"keywords": ["签到"]}, {"regex": "^\\d{1,3}$", "chat_types": ["group"]}]'></textarea>
+        <div class="tip">留空表示不写网关规则，回落到 hello 上报；<code>[]</code> 表示匹配全部消息。</div>
+      </div>
+    </form>
+    <div class="drawer-foot">
+      <button class="btn" id="form-cancel">取消</button>
+      <button class="btn primary" id="form-save"><i data-lucide="check"></i>保存</button>
+    </div>
+  </aside>
+
+  <aside class="trace-panel" id="trace-panel" aria-hidden="true">
+    <div class="drawer-head">
+      <h2>消息路径</h2>
+      <button class="btn icon ghost" id="trace-close" title="关闭"><i data-lucide="x"></i></button>
+    </div>
+    <div class="drawer-body" id="trace-body"></div>
+  </aside>
+
+  <dialog id="token-dialog">
+    <form method="dialog" id="token-form">
+      <div class="dialog-body">
+        <h3>管理令牌</h3>
+        <p>对应 <code>gateway_config.json</code> 顶层的 <code>admin_token</code>，只保存在当前浏览器会话。</p>
+        <div class="field" style="margin:0">
+          <input id="token-input" type="password" autocomplete="off" placeholder="粘贴 admin_token">
+          <div class="tip" id="token-error" style="color:var(--danger)" hidden></div>
+          <div class="tip">网关没有配置 admin_token 时，管理操作会返回 403。</div>
+        </div>
+      </div>
+      <div class="dialog-foot">
+        <button class="btn" value="cancel" type="submit">取消</button>
+        <button class="btn primary" id="token-connect" value="ok" type="submit"><i data-lucide="link"></i>连接</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="secret-dialog">
+    <div class="dialog-body">
+      <h3>应用令牌</h3>
+      <p>请现在复制保存，关闭后无法再次查看。</p>
+      <div class="secret"><span id="secret-value"></span></div>
+    </div>
+    <div class="dialog-foot">
+      <button class="btn" id="secret-copy"><i data-lucide="copy"></i>复制</button>
+      <button class="btn primary" id="secret-close">知道了</button>
+    </div>
+  </dialog>
+
+  <dialog id="confirm-dialog">
+    <div class="dialog-body">
+      <h3 id="confirm-title">确认操作</h3>
+      <p id="confirm-text"></p>
+    </div>
+    <div class="dialog-foot">
+      <button class="btn" id="confirm-cancel">取消</button>
+      <button class="btn danger" id="confirm-ok">确认</button>
+    </div>
+  </dialog>
+
+  <div class="toasts" id="toasts"></div>
+
+  <script>
+    const $ = (selector) => document.querySelector(selector);
+
+    const state = {
+      token: sessionStorage.getItem("gatewayAdminToken") || "",
+      tokenOk: false,
+      apps: [],
+      status: null,
+      filter: "",
+      editing: null,
+      view: "apps",
+      messages: [],
+      traceId: null,
+    };
+
+    const els = {
+      upstreamPill: $("#upstream-pill"),
+      tokenLabel: $("#token-label"),
+      appsBody: $("#apps-body"),
+      empty: $("#empty-state"),
+      drawer: $("#drawer"),
+      tracePanel: $("#trace-panel"),
+      traceBody: $("#trace-body"),
+      scrim: $("#scrim"),
+      form: $("#app-form"),
+      rules: $("#field-rules"),
+      messagesBody: $("#messages-body"),
+      messagesEmpty: $("#messages-empty"),
+      messagesCount: $("#messages-count"),
+    };
+
+    function escapeHtml(value) {
+      return String(value ?? "").replace(/[&<>"']/g, (char) => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+      }[char]));
+    }
+
+    function icon(name, size) {
+      return `<i data-lucide="${name}"></i>`;
+    }
+
+    function refreshIcons() {
+      if (window.lucide) window.lucide.createIcons();
+    }
+
+    function toast(message, kind) {
+      const node = document.createElement("div");
+      node.className = "toast" + (kind ? " " + kind : "");
+      node.textContent = message;
+      $("#toasts").appendChild(node);
+      setTimeout(() => node.remove(), 3600);
+    }
+
+    async function api(method, path, body) {
+      const headers = {};
+      if (body !== undefined) headers["Content-Type"] = "application/json";
+      if (state.token) headers["X-Admin-Token"] = state.token;
+      const response = await fetch(path, {
+        method,
+        headers,
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+      let data = {};
+      try {
+        data = await response.json();
+      } catch (_) { /* 空响应 */ }
+      if (!response.ok) {
+        const detail = data && data.detail;
+        const error = new Error(
+          typeof detail === "string" ? detail : JSON.stringify(detail || data)
+        );
+        error.status = response.status;
+        throw error;
+      }
+      return data;
+    }
+
+    function setPill(node, kind, text) {
+      node.className = "pill" + (kind ? " " + kind : "");
+      node.textContent = text;
+    }
+
+    function rulesText(rules) {
+      if (!rules) return "hello 上报";
+      if (rules.mode === "all") return "全部消息";
+      if (rules.mode === "legacy") return "未声明";
+      const parts = [];
+      if (rules.keywords && rules.keywords.length) parts.push("关键词 " + rules.keywords.join("、"));
+      if (rules.regex && rules.regex.length) parts.push("正则 " + rules.regex.length + " 条");
+      if (rules.senders && rules.senders.length) parts.push("发送者 " + rules.senders.join("、"));
+      if (rules.chat_types && rules.chat_types.length) parts.push("类型 " + rules.chat_types.join("/"));
+      return parts.join(" · ") || (rules.count ? rules.count + " 条规则" : "规则");
+    }
+
+    function renderHeader(status) {
+      const upstream = status.upstream || {};
+      const context = status.context || {};
+      if (upstream.connected && context.health_ok) {
+        setPill(els.upstreamPill, "ok", "上游在线");
+      } else if (upstream.connected) {
+        setPill(els.upstreamPill, "warn", "上游已连接 · 健康检查异常");
+      } else {
+        setPill(els.upstreamPill, "bad", "上游离线");
+      }
+      $("#gateway-addr").textContent = upstream.url || "HandWeChat 消息网关";
+      els.tokenLabel.textContent = state.token
+        ? (state.tokenOk ? "管理令牌已连接" : "管理令牌待验证")
+        : "设置管理令牌";
+    }
+
+    function renderStats(status) {
+      const upstream = status.upstream || {};
+      const context = status.context || {};
+      const queue = status.queue || {};
+      $("#stat-upstream").textContent = upstream.connected
+        ? (context.health_ok ? "在线" : "已连接")
+        : "离线";
+      $("#stat-upstream-sub").textContent = context.chat_title
+        ? "当前聊天：" + context.chat_title
+        : (upstream.last_error || "没有上游连接");
+      $("#stat-queue").textContent = (queue.size ?? 0) + " / " + (queue.capacity ?? 0);
+      $("#stat-queue-sub").textContent = "积压消息";
+      const pin = status.pin;
+      $("#stat-pin").textContent = pin ? pin.app_id : "无";
+      $("#stat-pin-sub").textContent = pin
+        ? (pin.state || "") + " · " + (pin.chat_title || "") + " · " + (pin.hold_seconds || 0) + " 秒"
+        : "当前没有应用置顶";
+      const apps = status.apps || [];
+      const connected = apps.filter((item) => item.connected).length;
+      $("#stat-apps").textContent = connected + " / " + apps.length;
+      const circuit = apps.filter((item) => item.circuit_open).length;
+      $("#stat-apps-sub").textContent = circuit ? circuit + " 个应用处于熔断" : "在线 / 已登记";
+    }
+
+    function renderTable() {
+      const keyword = state.filter.trim().toLowerCase();
+      const apps = state.apps.filter((item) => {
+        if (!keyword) return true;
+        return (item.id + " " + item.name).toLowerCase().includes(keyword);
+      });
+      els.appsBody.innerHTML = apps.map((app, index) => {
+        const zone = app.system ? '<span class="badge system">系统</span>' : '<span class="badge">普通</span>';
+        const connected = app.connected
+          ? '<span class="badge on">在线</span>'
+          : '<span class="badge off">离线</span>';
+        const disabled = app.enabled ? "" : ' <span class="badge disabled">已停用</span>';
+        const circuit = app.circuit_open ? ' <span class="badge off">熔断</span>' : "";
+        return `<tr>
+          <td class="order">${index + 1}</td>
+          <td>
+            <div class="app-name">${escapeHtml(app.name)}${disabled}${circuit}</div>
+            <div class="app-id">${escapeHtml(app.id)}</div>
+          </td>
+          <td>${zone}</td>
+          <td class="nums">${app.priority}</td>
+          <td>${connected}</td>
+          <td><div class="rules" title="${escapeHtml(rulesText(app.rules))}">${escapeHtml(rulesText(app.rules))}</div></td>
+          <td class="nums">${app.timeout_ms}ms / ${app.hold_seconds}s</td>
+          <td class="nums" title="询问 / 消费 / 改写 / 超时"><b>${app.offers}</b> / ${app.consumes} / ${app.rewrites} / ${app.timeouts}</td>
+          <td>
+            <div class="row-actions">
+              <button class="btn icon ghost" data-action="edit" data-id="${escapeHtml(app.id)}" title="编辑">${icon("pencil")}</button>
+              <button class="btn icon ghost" data-action="delete" data-id="${escapeHtml(app.id)}" title="注销">${icon("trash-2")}</button>
+            </div>
+          </td>
+        </tr>`;
+      }).join("");
+      els.empty.hidden = apps.length > 0;
+      refreshIcons();
+    }
+
+    function render() {
+      if (!state.status) return;
+      renderHeader(state.status);
+      renderStats(state.status);
+      renderTable();
+    }
+
+    async function refresh() {
+      try {
+        const status = await fetch("/api/v1/gateway/status").then((response) => response.json());
+        state.status = status;
+        state.apps = status.apps || [];
+        render();
+      } catch (error) {
+        setPill(els.upstreamPill, "bad", "网关不可达");
+      }
+    }
+
+    function openTokenDialog() {
+      const dialog = $("#token-dialog");
+      $("#token-input").value = state.token;
+      $("#token-error").hidden = true;
+      dialog.showModal();
+      setTimeout(() => $("#token-input").focus(), 30);
+    }
+
+    async function validateToken() {
+      if (!state.token) { state.tokenOk = false; return; }
+      try {
+        await api("GET", "/api/v1/gateway/apps");
+        state.tokenOk = true;
+      } catch (error) {
+        state.tokenOk = false;
+        if (error.status === 401) toast("管理令牌无效，请重新设置", "bad");
+        if (error.status === 403) toast("网关未配置 admin_token，管理接口已禁用", "bad");
+      }
+      render();
+      if (state.view === "messages") refreshMessages();
+    }
+
+    function openDrawer(mode, app) {
+      state.editing = mode === "edit" ? app : null;
+      $("#drawer-title").textContent = mode === "edit" ? "编辑 " + app.id : "注册应用";
+      $("#field-id").value = app ? app.id : "";
+      $("#field-id").disabled = mode === "edit";
+      $("#field-name").value = app ? app.name : "";
+      $("#field-priority").value = app ? app.priority : 10;
+      $("#field-zone").value = app && app.system ? "true" : "false";
+      $("#field-timeout").value = app ? app.timeout_ms : 800;
+      $("#field-hold").value = app ? app.hold_seconds : 120;
+      $("#field-enabled").checked = app ? app.enabled : true;
+      $("#field-rewrite").checked = app ? app.can_rewrite : false;
+      $("#field-token").value = "";
+      $("#field-token").placeholder = mode === "edit" ? "留空保持原令牌不变" : "留空由网关生成";
+      $("#token-tip").textContent = mode === "edit"
+        ? "留空保持原令牌；填写则替换。"
+        : "留空时网关生成随机令牌，只在注册响应里返回一次。";
+      $("#clear-token-wrap").hidden = mode !== "edit";
+      $("#field-clear-token").checked = false;
+      $("#field-groups").value = app ? (app.groups || []).join(", ") : "";
+      els.rules.value = app && app.rules ? JSON.stringify(app.rules, null, 2) : "";
+      els.drawer.classList.add("open");
+      els.drawer.setAttribute("aria-hidden", "false");
+      els.scrim.classList.add("show");
+      setTimeout(() => $("#field-name").focus(), 120);
+    }
+
+    function closeDrawer() {
+      els.drawer.classList.remove("open");
+      els.drawer.setAttribute("aria-hidden", "true");
+      if (!els.tracePanel.classList.contains("open")) {
+        els.scrim.classList.remove("show");
+      }
+      state.editing = null;
+    }
+
+    function collectForm() {
+      const id = $("#field-id").value.trim();
+      if (!id) throw new Error("应用 id 不能为空");
+      const priority = Number($("#field-priority").value);
+      const timeout = Number($("#field-timeout").value);
+      const hold = Number($("#field-hold").value);
+      if (!Number.isFinite(priority)) throw new Error("优先级必须是数字");
+      if (!Number.isFinite(timeout) || timeout < 50) throw new Error("单次超时至少 50ms");
+      if (!Number.isFinite(hold) || hold < 0) throw new Error("置顶时长不能为负");
+      const groups = $("#field-groups").value
+        .split(/[,，]/)
+        .map((item) => item.trim())
+        .filter(Boolean);
+      let rules = null;
+      const rawRules = els.rules.value.trim();
+      if (rawRules) {
+        try {
+          rules = JSON.parse(rawRules);
+        } catch (error) {
+          throw new Error("规则不是合法 JSON：" + error.message);
+        }
+        if (!Array.isArray(rules)) throw new Error("规则必须是数组");
+      }
+      const payload = {
+        id,
+        name: $("#field-name").value.trim(),
+        priority,
+        system: $("#field-zone").value === "true",
+        timeout_ms: timeout,
+        hold_seconds: hold,
+        enabled: $("#field-enabled").checked,
+        can_rewrite: $("#field-rewrite").checked,
+        groups,
+        rules,
+      };
+      const tokenValue = $("#field-token").value.trim();
+      if (tokenValue) {
+        payload.token = tokenValue;
+      } else if (!state.editing) {
+        delete payload.token;
+      } else if ($("#field-clear-token").checked) {
+        payload.token = "";
+      } else {
+        delete payload.token;
+      }
+      return payload;
+    }
+
+    async function saveApp() {
+      let payload;
+      try {
+        payload = collectForm();
+      } catch (error) {
+        toast(error.message, "bad");
+        return;
+      }
+      if (!state.token) { openTokenDialog(); return; }
+      const button = $("#form-save");
+      button.disabled = true;
+      try {
+        if (state.editing) {
+          const body = { ...payload };
+          delete body.id;
+          await api("PUT", "/api/v1/gateway/apps/" + encodeURIComponent(state.editing.id), body);
+          toast("已更新 " + state.editing.id, "ok");
+        } else {
+          const data = await api("POST", "/api/v1/gateway/apps", payload);
+          $("#secret-value").textContent = data.token || "";
+          $("#secret-dialog").showModal();
+        }
+        closeDrawer();
+        await refresh();
+      } catch (error) {
+        if (error.status === 401 || error.status === 403) {
+          state.tokenOk = false;
+          openTokenDialog();
+        } else {
+          toast(error.message, "bad");
+        }
+      } finally {
+        button.disabled = false;
+      }
+    }
+
+    async function editApp(appId) {
+      if (!state.token) { openTokenDialog(); return; }
+      try {
+        const data = await api("GET", "/api/v1/gateway/apps/" + encodeURIComponent(appId));
+        const app = state.apps.find((item) => item.id === appId) || {};
+        openDrawer("edit", { ...app, ...data.app });
+      } catch (error) {
+        if (error.status === 401 || error.status === 403) {
+          state.tokenOk = false;
+          openTokenDialog();
+        } else {
+          toast(error.message, "bad");
+        }
+      }
+    }
+
+    function confirmDialog(title, text) {
+      return new Promise((resolve) => {
+        const dialog = $("#confirm-dialog");
+        $("#confirm-title").textContent = title;
+        $("#confirm-text").textContent = text;
+        const done = (value) => {
+          dialog.close();
+          $("#confirm-ok").onclick = null;
+          $("#confirm-cancel").onclick = null;
+          resolve(value);
+        };
+        $("#confirm-ok").onclick = () => done(true);
+        $("#confirm-cancel").onclick = () => done(false);
+        dialog.showModal();
+      });
+    }
+
+    async function deleteApp(appId) {
+      if (!state.token) { openTokenDialog(); return; }
+      const ok = await confirmDialog(
+        "注销 " + appId,
+        "会从配置中删除该应用并断开它的连接，配置里的其他内容不受影响。"
+      );
+      if (!ok) return;
+      try {
+        await api("DELETE", "/api/v1/gateway/apps/" + encodeURIComponent(appId));
+        toast("已注销 " + appId, "ok");
+        await refresh();
+      } catch (error) {
+        if (error.status === 401 || error.status === 403) {
+          state.tokenOk = false;
+          openTokenDialog();
+        } else {
+          toast(error.message, "bad");
+        }
+      }
+    }
+
+    function formatTime(iso) {
+      if (!iso) return "-";
+      return iso.length >= 19 ? iso.slice(11, 19) : iso;
+    }
+
+    function shortText(text, limit) {
+      const value = String(text ?? "");
+      return value.length > limit ? value.slice(0, limit) + "…" : value;
+    }
+
+    function switchView(view) {
+      state.view = view;
+      document.querySelectorAll(".tab").forEach((tab) => {
+        tab.classList.toggle("active", tab.dataset.view === view);
+      });
+      $("#view-apps").hidden = view !== "apps";
+      $("#view-messages").hidden = view !== "messages";
+      if (view === "messages") refreshMessages();
+    }
+
+    async function refreshMessages() {
+      if (!state.token) {
+        state.messages = [];
+        renderMessages("设置管理令牌后可查看消息日志。");
+        return;
+      }
+      try {
+        const data = await api("GET", "/api/v1/gateway/messages?limit=100");
+        state.messages = data.messages || [];
+        renderMessages();
+      } catch (error) {
+        if (error.status === 401 || error.status === 403) {
+          state.tokenOk = false;
+          renderMessages("管理令牌无效，或网关未配置 admin_token。");
+        } else {
+          renderMessages("消息日志读取失败：" + error.message);
+        }
+      }
+    }
+
+    function renderMessages(emptyText) {
+      const rows = state.messages || [];
+      els.messagesCount.textContent = rows.length + " 条";
+      els.messagesBody.innerHTML = rows.map((item) => {
+        const handled = item.consumed_by
+          ? '<span class="badge on">' + escapeHtml(item.consumed_by) + "</span>"
+          : '<span class="badge off">' +
+            (item.reason === "no_app" ? "无匹配" : item.reason === "deadline" ? "超时" : "未处理") +
+            "</span>";
+        const route = item.tried && item.tried.length
+          ? item.tried.join(" → ")
+          : "未询问";
+        return `<tr data-trace="${escapeHtml(item.id)}">
+          <td class="time-cell">${escapeHtml(formatTime(item.received_at || item.recorded_at))}</td>
+          <td>${escapeHtml(item.sender || "-")}</td>
+          <td class="content-cell" title="${escapeHtml(item.content || "")}">${escapeHtml(shortText(item.content, 80))}</td>
+          <td>${handled}</td>
+          <td class="nums">${item.elapsed_ms ?? 0}ms</td>
+          <td class="route">${escapeHtml(route)}</td>
+        </tr>`;
+      }).join("");
+      const empty = rows.length === 0;
+      els.messagesEmpty.hidden = !empty;
+      document.querySelector(".messages-table").hidden = empty;
+      if (empty) {
+        $("#messages-empty-text").textContent = emptyText || "还没有消息。网关收到消息后会出现在这里。";
+      }
+      refreshIcons();
+    }
+
+    const RESULT_LABEL = {
+      consume: "处理消息",
+      rewrite: "改写",
+      rewrite_noop: "无改动",
+      rewrite_ignored: "改写被忽略",
+      timeout: "超时",
+      unavailable: "离线",
+    };
+
+    const RESULT_CLASS = {
+      consume: "consume",
+      rewrite: "rewrite",
+      rewrite_ignored: "warn",
+      timeout: "warn",
+      unavailable: "bad",
+    };
+
+    function diffHtml(before, after) {
+      const left = String(before ?? "");
+      const right = String(after ?? "");
+      if (left === right) return escapeHtml(left);
+      const max = Math.min(left.length, right.length);
+      let start = 0;
+      while (start < max && left[start] === right[start]) start += 1;
+      let endLeft = left.length;
+      let endRight = right.length;
+      while (
+        endLeft > start &&
+        endRight > start &&
+        left[endLeft - 1] === right[endRight - 1]
+      ) {
+        endLeft -= 1;
+        endRight -= 1;
+      }
+      const prefix = escapeHtml(left.slice(0, start));
+      const removed = escapeHtml(left.slice(start, endLeft));
+      const added = escapeHtml(right.slice(start, endRight));
+      const suffix = escapeHtml(left.slice(endLeft));
+      return (
+        prefix +
+        (removed ? "<del>" + removed + "</del>" : "") +
+        (added ? "<ins>" + added + "</ins>" : "") +
+        suffix
+      );
+    }
+
+    function renderStep(step) {
+      const result = step.result || "";
+      const label = RESULT_LABEL[result] || result || "-";
+      const cls = RESULT_CLASS[result] || "";
+      const badges = [
+        step.system ? '<span class="badge system">系统</span>' : '<span class="badge">普通</span>',
+        step.pinned ? '<span class="badge on">置顶</span>' : "",
+      ].join("");
+      const input = step.input || {};
+      const output = step.output || null;
+      const changed = output && output.content !== input.content;
+      let content = "";
+      if (output) {
+        content = changed
+          ? '<div class="content-box"><span class="box-tag">入 → 出</span>' +
+            diffHtml(input.content || "", output.content || "") +
+            "</div>"
+          : '<div class="content-box"><span class="box-tag">内容未变</span>' +
+            escapeHtml(input.content || "") +
+            "</div>";
+      } else {
+        content =
+          '<div class="content-box"><span class="box-tag">入参</span>' +
+          escapeHtml(input.content || "") +
+          "</div>";
+      }
+      const extras = [];
+      if (output && output.sender !== input.sender) {
+        extras.push("发送者 " + (input.sender || "-") + " → " + (output.sender || "-"));
+      }
+      if (step.extra_changed) extras.push("extra 已修改");
+      if (step.response_items) extras.push("回复项 " + step.response_items);
+      const elapsed = step.elapsed_ms > 0 ? step.elapsed_ms + "ms" : "<1ms";
+      return `<div class="step ${cls}">
+        <div class="step-head">
+          <span class="step-name">${escapeHtml(step.name || step.app_id)}</span>
+          <span class="badge">${escapeHtml(label)}</span>
+          ${badges}
+          <span class="step-meta">${elapsed}</span>
+        </div>
+        ${content}
+        ${extras.length ? '<div class="skip-row">' + escapeHtml(extras.join(" · ")) + "</div>" : ""}
+      </div>`;
+    }
+
+    function renderTrace(record) {
+      const steps = record.steps || [];
+      const asked = new Set(record.tried || []);
+      const skipped = (record.candidates || []).filter((id) => !asked.has(id));
+      const finalStep = steps.find((step) => step.app_id === record.consumed_by) || {};
+      const finalName = record.consumed_by
+        ? finalStep.name || record.consumed_by
+        : "";
+      const statusBadge = record.consumed_by
+        ? '<span class="badge on">已处理</span>'
+        : '<span class="badge off">未处理</span>';
+
+      const meta = `<div class="trace-meta">
+        ${statusBadge}
+        <span class="meta">${escapeHtml(formatTime(record.received_at || record.recorded_at))}</span>
+        <span class="meta">${escapeHtml(record.chat || "未知聊天")}</span>
+        <span class="meta">发送者 ${escapeHtml(record.sender || "-")}</span>
+        <span class="meta">耗时 ${record.elapsed_ms ?? 0}ms</span>
+      </div>`;
+
+      const entry = `<div class="flow-card">
+        <div class="flow-label">入口消息</div>
+        <div class="flow-text mono">${escapeHtml(record.content || "")}</div>
+      </div>`;
+
+      const timeline = steps.length
+        ? '<div class="timeline">' + steps.map(renderStep).join("") + "</div>"
+        : "";
+
+      let finalCard = "";
+      if (record.consumed_by) {
+        const reply = record.reply && record.reply.text
+          ? '<div class="content-box"><span class="box-tag">回复内容（' +
+            record.reply.parts + " 条）</span>" +
+            escapeHtml(record.reply.text) +
+            "</div>"
+          : '<div class="skip-row">没有产生回复内容</div>';
+        finalCard = `<div class="flow-result">
+          <div class="flow-card accent">
+            <div class="flow-label">最终处理：${escapeHtml(finalName)}</div>
+            <div class="flow-text mono">${diffHtml(record.content || "", record.final_content || "")}</div>
+            ${reply}
+          </div>
+        </div>`;
+      } else {
+        const title = record.reason === "deadline"
+          ? "超过本轮截止时间"
+          : record.reason === "no_app"
+            ? "没有应用匹配"
+            : "没有应用处理";
+        finalCard = `<div class="flow-result">
+          <div class="flow-card bad">
+            <div class="flow-label">${escapeHtml(title)}</div>
+            <div class="flow-text mono">${escapeHtml(record.final_content || record.content || "")}</div>
+          </div>
+        </div>`;
+      }
+
+      const skip = skipped.length
+        ? '<div class="skip-row">候选但未询问：' + escapeHtml(skipped.join("、")) + "</div>"
+        : "";
+
+      els.traceBody.innerHTML = meta + entry + timeline + finalCard + skip;
+      refreshIcons();
+    }
+
+    async function openTrace(traceId) {
+      try {
+        const data = await api("GET", "/api/v1/gateway/messages/" + encodeURIComponent(traceId));
+        state.traceId = traceId;
+        renderTrace(data.message);
+        els.tracePanel.classList.add("open");
+        els.tracePanel.setAttribute("aria-hidden", "false");
+        els.scrim.classList.add("show");
+      } catch (error) {
+        if (error.status === 401 || error.status === 403) {
+          state.tokenOk = false;
+          openTokenDialog();
+        } else {
+          toast(error.message, "bad");
+        }
+      }
+    }
+
+    function closeTrace() {
+      els.tracePanel.classList.remove("open");
+      els.tracePanel.setAttribute("aria-hidden", "true");
+      if (!els.drawer.classList.contains("open")) {
+        els.scrim.classList.remove("show");
+      }
+    }
+
+    els.appsBody.addEventListener("click", (event) => {
+      const button = event.target.closest("button[data-action]");
+      if (!button) return;
+      const appId = button.dataset.id;
+      if (button.dataset.action === "edit") editApp(appId);
+      if (button.dataset.action === "delete") deleteApp(appId);
+    });
+
+    document.querySelectorAll(".tab").forEach((tab) => {
+      tab.addEventListener("click", () => switchView(tab.dataset.view));
+    });
+
+    els.messagesBody.addEventListener("click", (event) => {
+      const row = event.target.closest("tr[data-trace]");
+      if (row) openTrace(row.dataset.trace);
+    });
+
+    $("#messages-refresh").addEventListener("click", refreshMessages);
+    $("#trace-close").addEventListener("click", closeTrace);
+
+    $("#filter").addEventListener("input", (event) => {
+      state.filter = event.target.value;
+      renderTable();
+    });
+
+    $("#register-button").addEventListener("click", () => {
+      if (!state.token) { openTokenDialog(); return; }
+      openDrawer("create", null);
+    });
+
+    $("#drawer-close").addEventListener("click", closeDrawer);
+    $("#form-cancel").addEventListener("click", closeDrawer);
+    $("#form-save").addEventListener("click", saveApp);
+    els.scrim.addEventListener("click", () => {
+      closeDrawer();
+      closeTrace();
+    });
+
+    $("#token-button").addEventListener("click", openTokenDialog);
+
+    $("#token-form").addEventListener("submit", async (event) => {
+      if (event.submitter && event.submitter.value === "cancel") return;
+      event.preventDefault();
+      const value = $("#token-input").value.trim();
+      state.token = value;
+      if (value) sessionStorage.setItem("gatewayAdminToken", value);
+      else sessionStorage.removeItem("gatewayAdminToken");
+      await validateToken();
+      if (state.tokenOk) {
+        $("#token-dialog").close();
+        toast("管理令牌已连接", "ok");
+      } else if (value) {
+        const error = $("#token-error");
+        error.hidden = false;
+        error.textContent = "令牌校验失败，请确认 admin_token 配置。";
+      }
+    });
+
+    $("#secret-copy").addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText($("#secret-value").textContent);
+        toast("已复制", "ok");
+      } catch (_) {
+        toast("复制失败，请手动选择文本", "bad");
+      }
+    });
+    $("#secret-close").addEventListener("click", () => $("#secret-dialog").close());
+
+    $("#refresh-button").addEventListener("click", refresh);
+
+    refreshIcons();
+    refresh();
+    validateToken();
+    setInterval(refresh, 2000);
+    setInterval(() => {
+      if (state.view === "messages") refreshMessages();
+    }, 2000);
+  </script>
+</body>
+</html>

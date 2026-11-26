@@ -12,7 +12,15 @@ import logging
 from pathlib import Path
 
 from fastapi import FastAPI, WebSocket
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
+from handwechat.gateway.admin import (
+    ConfigStore,
+    GatewayAdmin,
+    app_entry,
+    register_routes,
+)
 from handwechat.gateway.config import GatewayConfig
 from handwechat.gateway.dispatcher import Dispatcher, GatewayStats
 from handwechat.gateway.hub import AppHub
@@ -20,10 +28,10 @@ from handwechat.gateway.logging_setup import configure_gateway_logging
 from handwechat.gateway.models import now_iso
 from handwechat.gateway.pin import PinManager
 from handwechat.gateway.registry import AppRegistry
-from handwechat.gateway.rules import summarize as summarize_rules
 from handwechat.gateway.sends import SendCoordinator
+from handwechat.gateway.trace import MessageLog
 from handwechat.gateway.upstream import UpstreamClient
-from handwechat.paths import app_data_path, app_path
+from handwechat.paths import app_data_path, app_path, resource_path
 from handwechat.version import __version__
 
 logger = logging.getLogger("handwechat.gateway")
@@ -62,6 +70,7 @@ def create_app(
     hub.set_sender(sender.send_from_app)
     hub.set_context_provider(upstream.context)
     stats = GatewayStats()
+    message_log = MessageLog()
     dispatcher = Dispatcher(
         registry,
         pins,
@@ -72,6 +81,36 @@ def create_app(
         stats=stats,
         queue=queue,
         context_provider=upstream.context,
+        message_log=message_log,
+    )
+
+    # 没带 --config 启动时，管理接口仍写默认配置路径。
+    write_path = watch_path or app_data_path("gateway_config.json")
+    watch_state = (
+        _WatchState(watch_path) if watch_path is not None else None
+    )
+    config_lock = asyncio.Lock()
+
+    async def apply_config_data(data: dict) -> None:
+        new_config = GatewayConfig.from_dict(data)
+        await _apply_config(
+            new_config,
+            registry=registry,
+            hub=hub,
+            upstream=upstream,
+            dispatcher=dispatcher,
+        )
+        if watch_state is not None:
+            watch_state.mark()
+
+    admin = GatewayAdmin(
+        store=ConfigStore(
+            write_path,
+            seed=None if watch_path is not None else _seed_apps(config),
+        ),
+        registry=registry,
+        apply=apply_config_data,
+        lock=config_lock,
     )
 
     @asynccontextmanager
@@ -110,10 +149,18 @@ def create_app(
                 name="gateway-health",
             ),
         ]
-        if watch_path is not None:
+        if watch_state is not None:
             tasks.append(
                 asyncio.create_task(
-                    _watch_config(watch_path, registry, hub, upstream, dispatcher, config),
+                    _watch_config(
+                        watch_state,
+                        interval=max(0.5, config.config_reload_seconds),
+                        registry=registry,
+                        hub=hub,
+                        upstream=upstream,
+                        dispatcher=dispatcher,
+                        lock=config_lock,
+                    ),
                     name="gateway-config",
                 )
             )
@@ -141,6 +188,20 @@ def create_app(
 
     app = FastAPI(title="HandWeChat Gateway", version=__version__)
     app.router.lifespan_context = lifespan
+    register_routes(app, admin, message_log)
+
+    @app.get("/", include_in_schema=False)
+    def console() -> FileResponse:
+        return FileResponse(
+            resource_path("handwechat/gateway/static/index.html"),
+            media_type="text/html",
+        )
+
+    app.mount(
+        "/static",
+        StaticFiles(directory=resource_path("handwechat/gateway/static")),
+        name="static",
+    )
 
     @app.get("/api/v1/gateway/health")
     def health() -> dict:
@@ -161,32 +222,7 @@ def create_app(
     @app.get("/api/v1/gateway/status")
     def status() -> dict:
         pin = pins.pin
-        apps = []
-        for runtime in registry.all():
-            apps.append(
-                {
-                    "id": runtime.id,
-                    "name": runtime.name,
-                    "system": runtime.system,
-                    "priority": runtime.priority,
-                    "enabled": runtime.config.enabled,
-                    "can_rewrite": runtime.config.can_rewrite,
-                    "groups": list(runtime.config.groups),
-                    "rules": {
-                        **summarize_rules(runtime.effective_rules()),
-                        "source": runtime.rules_source,
-                    },
-                    "connected": runtime.connected,
-                    "circuit_open": runtime.circuit_open(),
-                    "timeout_ms": runtime.config.timeout_ms,
-                    "hold_seconds": runtime.config.hold_seconds,
-                    "offers": runtime.offers,
-                    "consumes": runtime.consumes,
-                    "rewrites": runtime.rewrites,
-                    "timeouts": runtime.timeouts,
-                    "last_error": runtime.last_error,
-                }
-            )
+        apps = [runtime.status_payload() for runtime in registry.all()]
         return {
             "upstream": {
                 "url": upstream.ws_url,
@@ -263,71 +299,120 @@ def _clock() -> str:
     return datetime.now().strftime("%H:%M:%S")
 
 
+class _WatchState:
+    """配置文件 mtime 记录；管理接口写完后同步，避免重复热加载。"""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.last_mtime = _mtime(path)
+
+    def changed(self) -> bool:
+        mtime = _mtime(self.path)
+        if mtime == self.last_mtime:
+            return False
+        self.last_mtime = mtime
+        return True
+
+    def mark(self) -> None:
+        self.last_mtime = _mtime(self.path)
+
+
 async def _watch_config(
-    path: Path,
+    watch: _WatchState,
+    *,
+    interval: float,
     registry: AppRegistry,
     hub: AppHub,
     upstream: UpstreamClient,
     dispatcher: Dispatcher,
-    config: GatewayConfig,
+    lock: asyncio.Lock,
 ) -> None:
-    interval = max(0.5, config.config_reload_seconds)
-    last_mtime = _mtime(path)
     while True:
         await asyncio.sleep(interval)
-        mtime = _mtime(path)
-        if mtime == last_mtime:
-            continue
-        last_mtime = mtime
-        previous_ids = {app.id for app in registry.all()}
-        try:
-            new_config = GatewayConfig.load(path)
-        except Exception as exc:
-            detail = f"{type(exc).__name__}: {exc}"
-            # 配置写坏时保留旧配置，避免半生效。
-            logger.error(
-                json.dumps(
-                    {"event": "config_reload_failed", "error": detail},
-                    ensure_ascii=False,
+        # 与管理接口共用一把锁：写文件和生效之间不会互相插队。
+        async with lock:
+            if not watch.changed():
+                continue
+            try:
+                new_config = GatewayConfig.load(watch.path)
+            except Exception as exc:
+                detail = f"{type(exc).__name__}: {exc}"
+                # 配置写坏时保留旧配置，避免半生效。
+                logger.error(
+                    json.dumps(
+                        {"event": "config_reload_failed", "error": detail},
+                        ensure_ascii=False,
+                    )
                 )
+                _console_notice(f"配置热加载失败，已保留旧配置：{detail}")
+                continue
+            await _apply_config(
+                new_config,
+                registry=registry,
+                hub=hub,
+                upstream=upstream,
+                dispatcher=dispatcher,
             )
-            _console_notice(f"配置热加载失败，已保留旧配置：{detail}")
-            continue
 
-        new_config.log_dir = str(app_path(new_config.log_dir))
-        _warn_duplicate_priorities(new_config)
-        removed = registry.reload(new_config)
-        hub.update_config(new_config)
-        upstream.update_config(new_config)
-        dispatcher.on_config_changed()
-        for app_id in removed:
-            await hub.close(app_id)
 
-        added = sorted(
-            {app.id for app in new_config.all_apps()} - previous_ids
+async def _apply_config(
+    new_config: GatewayConfig,
+    *,
+    registry: AppRegistry,
+    hub: AppHub,
+    upstream: UpstreamClient,
+    dispatcher: Dispatcher,
+) -> tuple[list[str], list[str]]:
+    """应用新配置并通知各组件，返回（新增, 移除）的应用 id。"""
+
+    new_config.log_dir = str(app_path(new_config.log_dir))
+    _warn_duplicate_priorities(new_config)
+    previous_ids = {app.id for app in registry.all()}
+    removed = registry.reload(new_config)
+    hub.update_config(new_config)
+    upstream.update_config(new_config)
+    dispatcher.on_config_changed()
+    for app_id in removed:
+        await hub.close(app_id)
+
+    added = sorted(
+        {app.id for app in new_config.all_apps()} - previous_ids
+    )
+    order = _describe_order(new_config) or "（无应用）"
+    logger.info(
+        json.dumps(
+            {
+                "event": "config_reloaded",
+                "apps": [app.id for app in new_config.all_apps()],
+                "system_apps": [
+                    app.id for app in new_config.system_apps
+                ],
+                "added": added,
+                "removed": removed,
+                "order": order,
+            },
+            ensure_ascii=False,
         )
-        order = _describe_order(new_config) or "（无应用）"
-        logger.info(
-            json.dumps(
-                {
-                    "event": "config_reloaded",
-                    "apps": [app.id for app in new_config.all_apps()],
-                    "system_apps": [
-                        app.id for app in new_config.system_apps
-                    ],
-                    "added": added,
-                    "removed": removed,
-                    "order": order,
-                },
-                ensure_ascii=False,
-            )
-        )
-        _console_notice(
-            f"配置已热加载：{len(new_config.all_apps())} 个应用"
-            f"（新增 {len(added)}，移除 {len(removed)}）；顺序：{order}"
-        )
-        if removed:
-            _console_notice(f"已断开移除的应用：{', '.join(removed)}")
+    )
+    _console_notice(
+        f"配置已热加载：{len(new_config.all_apps())} 个应用"
+        f"（新增 {len(added)}，移除 {len(removed)}）；顺序：{order}"
+    )
+    if removed:
+        _console_notice(f"已断开移除的应用：{', '.join(removed)}")
+    return added, removed
+
+
+def _seed_apps(config: GatewayConfig) -> dict:
+    """没有配置文件可用时，管理接口以内存配置里的应用数组为起点。"""
+
+    seed = {
+        "system_apps": [app_entry(app) for app in config.system_apps],
+        "apps": [app_entry(app) for app in config.apps],
+    }
+    if config.admin_token:
+        seed["admin_token"] = config.admin_token
+    return seed
 
 
 def _mtime(path: Path) -> float:

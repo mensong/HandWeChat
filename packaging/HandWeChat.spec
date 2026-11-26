@@ -89,7 +89,12 @@ gui_exe = EXE(
 )
 
 
-gateway_datas = []
+gateway_datas = [
+    (
+        str(ROOT / "handwechat" / "gateway" / "static"),
+        "handwechat/gateway/static",
+    )
+]
 gateway_binaries = []
 gateway_hiddenimports = ["handwechat.gateway.api"]
 for package_name in ("fastapi", "uvicorn", "websockets"):

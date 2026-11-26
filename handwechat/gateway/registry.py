@@ -7,7 +7,7 @@ import time
 from dataclasses import dataclass
 
 from handwechat.gateway.config import GatewayAppConfig, GatewayConfig
-from handwechat.gateway.rules import Rule, parse_rules
+from handwechat.gateway.rules import Rule, parse_rules, summarize as summarize_rules
 
 
 @dataclass
@@ -69,6 +69,32 @@ class AppRuntime:
     def circuit_open(self, now: float | None = None) -> bool:
         now = time.monotonic() if now is None else now
         return now < self.open_until
+
+    def status_payload(self) -> dict:
+        """`/status` 与管理接口共用的应用运行状态；不包含 token。"""
+
+        return {
+            "id": self.id,
+            "name": self.name,
+            "system": self.system,
+            "priority": self.priority,
+            "enabled": self.config.enabled,
+            "can_rewrite": self.config.can_rewrite,
+            "groups": list(self.config.groups),
+            "rules": {
+                **summarize_rules(self.effective_rules()),
+                "source": self.rules_source,
+            },
+            "connected": self.connected,
+            "circuit_open": self.circuit_open(),
+            "timeout_ms": self.config.timeout_ms,
+            "hold_seconds": self.config.hold_seconds,
+            "offers": self.offers,
+            "consumes": self.consumes,
+            "rewrites": self.rewrites,
+            "timeouts": self.timeouts,
+            "last_error": self.last_error,
+        }
 
     def record_success(self) -> None:
         self.failures = 0
