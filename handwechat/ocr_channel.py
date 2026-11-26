@@ -73,6 +73,9 @@ _BG_FRIEND = "friend"
 _BG_SELF = "self"
 _BG_OTHER = "other"
 
+# 气泡内同一视觉行被空档切成多段时，按间隙宽度估算空格个数，最多补 20 个。
+_HGAP_MAX_SPACES = 20
+
 # 取文字框上下左右各偏移若干像素的点判底色：框内是文字，框外仍是气泡/页面背景。
 _BG_PROBE_OFFSET = 2
 _BG_PROBE_RADIUS = 1
@@ -771,6 +774,61 @@ def _gap_is_color(
     return None
 
 
+def _hgap_is_color(
+    array: np.ndarray,
+    left: OcrLine,
+    right: OcrLine,
+    color: Optional[tuple[int, int, int]],
+) -> Optional[bool]:
+    """Whether the space between two segments of one visual row is the bubble color."""
+
+    if color is None:
+        return None
+    gap = right.x0 - left.x1
+    if gap <= 0:
+        return None
+    overlap_y0 = max(left.y0, right.y0)
+    overlap_y1 = min(left.y1, right.y1)
+    if overlap_y1 - overlap_y0 < 6:
+        return None
+    inset = max(1, (overlap_y1 - overlap_y0) // 4)
+    ys = (overlap_y0 + inset, (overlap_y0 + overlap_y1) // 2, overlap_y1 - inset)
+    xs = tuple(
+        left.x1 + max(1, int(gap * fraction)) for fraction in (0.3, 0.5, 0.7)
+    )
+    height, width = array.shape[:2]
+    hits = 0
+    total = 0
+    for x in xs:
+        if x <= left.x1 or x >= right.x0 or x < 0 or x >= width:
+            continue
+        for y in ys:
+            if y < 0 or y >= height:
+                continue
+            total += 1
+            if _color_close(tuple(int(value) for value in array[y, x]), color):
+                hits += 1
+    if total == 0:
+        return None
+    if hits == total:
+        return True
+    if hits == 0:
+        return False
+    return None
+
+
+def _join_visual_row(previous: OcrLine, line: OcrLine, separator: str) -> OcrLine:
+    return replace(
+        previous,
+        text=previous.text + separator + line.text,
+        x0=min(previous.x0, line.x0),
+        y0=min(previous.y0, line.y0),
+        x1=max(previous.x1, line.x1),
+        y1=max(previous.y1, line.y1),
+        score=round((previous.score + line.score) / 2, 4),
+    )
+
+
 class OcrSendQueue:
     """Serial queue for OCR send actions."""
 
@@ -1309,7 +1367,7 @@ class OcrChannel:
                 _ParseStats(stale=stale, legacy=True),
             )
 
-        merged = self._merge_visual_rows(labeled)
+        merged = self._merge_visual_rows(array, labeled)
         bubbles = self._build_bubbles(array, merged)
         clipped = [self._is_top_clipped(array, bubble) for bubble in bubbles]
         visible = [
@@ -1470,7 +1528,9 @@ class OcrChannel:
         label, count = Counter(labels).most_common(1)[0]
         return label if count >= _BG_PROBE_MIN_VOTES else None
 
-    def _merge_visual_rows(self, lines: Sequence[OcrLine]) -> list[OcrLine]:
+    def _merge_visual_rows(
+        self, array: np.ndarray, lines: Sequence[OcrLine]
+    ) -> list[OcrLine]:
         merged: list[OcrLine] = []
         for line in lines:
             if merged:
@@ -1484,16 +1544,28 @@ class OcrChannel:
                     height = max(previous.height, line.height)
                     if -0.5 * height <= gap <= max(4, 1.5 * height):
                         separator = "" if gap <= 0.8 * height else " "
-                        merged[-1] = replace(
-                            previous,
-                            text=previous.text + separator + line.text,
-                            x0=min(previous.x0, line.x0),
-                            y0=min(previous.y0, line.y0),
-                            x1=max(previous.x1, line.x1),
-                            y1=max(previous.y1, line.y1),
-                            score=round((previous.score + line.score) / 2, 4),
-                        )
+                        merged[-1] = _join_visual_row(previous, line, separator)
                         continue
+                    if (
+                        previous.bg in (_BG_FRIEND, _BG_SELF)
+                        and gap > max(4, 1.5 * height)
+                    ):
+                        color = previous.bg_color
+                        if color is None and self.palette is not None:
+                            color = (
+                                self.palette.own
+                                if previous.bg == _BG_SELF
+                                else self.palette.friend
+                            )
+                        if _hgap_is_color(array, previous, line, color) is True:
+                            spaces = min(
+                                _HGAP_MAX_SPACES,
+                                max(1, round(gap / max(1.0, 0.5 * height))),
+                            )
+                            merged[-1] = _join_visual_row(
+                                previous, line, " " * spaces
+                            )
+                            continue
             merged.append(line)
         return merged
 
