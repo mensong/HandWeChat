@@ -122,7 +122,7 @@ async def decide_bot(offer: Offer):
 
 
 DECIDERS = {
-    "HandWeChat-Dispatch": decide_dispatch,
+    "dispatch": decide_dispatch,
     "fixer": decide_fixer,
     "checkin": decide_checkin,
     "slow": decide_slow,
