@@ -218,6 +218,48 @@ async def scenario_admin(tmp: str) -> None:
         _, status = await call("GET", port, "/api/v1/gateway/status", token=None)
         assert status["apps"][0]["connected"] is True, status
 
+        code, payload = await call(
+            "PUT",
+            port,
+            "/api/v1/gateway/apps/checkin/enabled",
+            {"enabled": False},
+        )
+        assert code == 200 and payload["enabled"] is False, (code, payload)
+        saved = read_config(config_path)
+        assert saved["apps"][0]["enabled"] is False, saved
+        _, status = await call("GET", port, "/api/v1/gateway/status", token=None)
+        assert status["apps"][0]["enabled"] is False, status
+
+        try:
+            await connect_app(port, "checkin", app_token)
+        except ConnectionClosed as exc:
+            assert getattr(getattr(exc, "rcvd", None), "code", None) == 4404, exc
+        else:
+            raise AssertionError("停用后的应用仍能握手")
+
+        code, _ = await call(
+            "PUT",
+            port,
+            "/api/v1/gateway/apps/checkin/enabled",
+            {"enabled": "yes"},
+        )
+        assert code == 400, code
+        code, _ = await call(
+            "PUT", port, "/api/v1/gateway/apps/missing/enabled", {"enabled": True}
+        )
+        assert code == 404, code
+
+        code, payload = await call(
+            "PUT",
+            port,
+            "/api/v1/gateway/apps/checkin/enabled",
+            {"enabled": True},
+        )
+        assert code == 200 and payload["enabled"] is True, (code, payload)
+        _, status = await call("GET", port, "/api/v1/gateway/status", token=None)
+        assert status["apps"][0]["enabled"] is True, status
+        assert status["apps"][0]["connected"] is True, status
+
         code, _ = await call(
             "POST", port, "/api/v1/gateway/apps", {"id": "checkin"}
         )

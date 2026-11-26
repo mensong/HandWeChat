@@ -254,7 +254,32 @@
     .nums { font-variant-numeric: tabular-nums; font-size: 12px; color: var(--text-muted); }
     .nums b { color: var(--text); font-weight: 600; }
 
-    .row-actions { display: flex; gap: 6px; justify-content: flex-end; }
+    .row-actions { display: flex; gap: 6px; justify-content: flex-end; align-items: center; }
+
+    .switch {
+      width: 34px;
+      height: 20px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: #cfd6dd;
+      position: relative;
+      cursor: pointer;
+      padding: 0;
+      flex: none;
+      transition: background .15s ease, border-color .15s ease;
+    }
+
+    .switch .knob {
+      position: absolute;
+      top: 2px; left: 2px;
+      width: 14px; height: 14px;
+      border-radius: 50%;
+      background: #fff;
+      transition: transform .15s ease;
+    }
+
+    .switch.on { background: var(--accent); border-color: var(--accent); }
+    .switch.on .knob { transform: translateX(14px); }
 
     .empty {
       padding: 42px 16px;
@@ -1002,6 +1027,8 @@
           <td class="nums" title="询问 / 消费 / 改写 / 超时"><b>${app.offers}</b> / ${app.consumes} / ${app.rewrites} / ${app.timeouts}</td>
           <td>
             <div class="row-actions">
+              <button class="switch ${app.enabled ? "on" : ""}" data-action="toggle" data-id="${escapeHtml(app.id)}"
+                title="${app.enabled ? "停用" : "启用"}" aria-pressed="${app.enabled ? "true" : "false"}"><span class="knob"></span></button>
               <button class="btn icon ghost" data-action="edit" data-id="${escapeHtml(app.id)}" title="编辑">${icon("pencil")}</button>
               <button class="btn icon ghost" data-action="delete" data-id="${escapeHtml(app.id)}" title="注销">${icon("trash-2")}</button>
             </div>
@@ -1479,10 +1506,34 @@
       }
     }
 
+    async function toggleApp(appId, enabled) {
+      if (!state.token) { openTokenDialog(); return; }
+      try {
+        await api(
+          "PUT",
+          "/api/v1/gateway/apps/" + encodeURIComponent(appId) + "/enabled",
+          { enabled }
+        );
+        toast((enabled ? "已启用 " : "已停用 ") + appId, "ok");
+        await refresh();
+      } catch (error) {
+        if (error.status === 401 || error.status === 403) {
+          state.tokenOk = false;
+          openTokenDialog();
+        } else {
+          toast(error.message, "bad");
+        }
+      }
+    }
+
     els.appsBody.addEventListener("click", (event) => {
       const button = event.target.closest("button[data-action]");
       if (!button) return;
       const appId = button.dataset.id;
+      if (button.dataset.action === "toggle") {
+        const app = state.apps.find((item) => item.id === appId);
+        toggleApp(appId, !(app && app.enabled));
+      }
       if (button.dataset.action === "edit") editApp(appId);
       if (button.dataset.action === "delete") deleteApp(appId);
     });

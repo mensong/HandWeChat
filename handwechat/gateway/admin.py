@@ -190,6 +190,18 @@ class GatewayAdmin:
         entry.pop("token", None)
         return {"ok": True, "app": entry}
 
+    async def set_enabled(self, app_id: str, enabled: bool) -> dict:
+        """只切换启用状态；已建立的连接保持，停用后不再收到询问。"""
+
+        payload = await self.update(app_id, {"enabled": enabled})
+        return {
+            "ok": True,
+            "id": app_id,
+            "enabled": enabled,
+            "system": payload["system"],
+            "app": payload["app"],
+        }
+
     def _read(self) -> dict:
         try:
             return self._store.read()
@@ -273,6 +285,13 @@ def register_routes(
     @router.put("/{app_id}")
     async def update_app(app_id: str, body: dict = Body(...)) -> dict:
         return await admin.update(app_id, body)
+
+    @router.put("/{app_id}/enabled")
+    async def set_enabled(app_id: str, body: dict = Body(...)) -> dict:
+        value = body.get("enabled")
+        if not isinstance(value, bool):
+            raise HTTPException(400, "enabled 必须是布尔值")
+        return await admin.set_enabled(app_id, value)
 
     @router.delete("/{app_id}")
     async def delete_app(app_id: str) -> dict:
