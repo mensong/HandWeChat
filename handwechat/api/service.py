@@ -596,6 +596,8 @@ class ApiService:
                 factory = OcrChannel
 
             calibration = self._load_ocr_calibration()
+            # 一次启动绑定一个会话：重启后不允许把上个会话的消息带出来。
+            self.message_buffer.clear()
             channel = factory(
                 poll_interval=self.config.ocr_poll_interval,
                 max_send_per_minute=self.config.ocr_max_send_per_minute,
@@ -604,17 +606,17 @@ class ApiService:
                 input_x_ratio=calibration.input_x_ratio,
                 input_y_ratio=calibration.input_y_ratio,
                 title_box=calibration.title_box,
-            chat_box=calibration.chat_box,
-            window_size=calibration.window_size,
-            window_maximized=calibration.window_maximized,
-            palette=calibration.palette,
-            on_message=self._on_ocr_message,
-            on_chat_changed=self._on_ocr_chat_changed,
-            on_error=self._on_ocr_error,
+                chat_box=calibration.chat_box,
+                window_size=calibration.window_size,
+                window_maximized=calibration.window_maximized,
+                palette=calibration.palette,
+                on_message=self._on_ocr_message,
+                on_error=self._on_ocr_error,
                 on_send_started=self._on_ocr_send_started,
                 on_send_completed=self._on_ocr_send_completed,
             )
             try:
+                # start() 会阻塞到首帧识别出会话名；失败会抛 OcrBindError。
                 channel.start()
             except Exception:
                 channel.stop(timeout=2.0)
@@ -700,9 +702,6 @@ class ApiService:
 
     def _on_ocr_message(self, message) -> None:
         self.message_buffer.append(message)
-
-    def _on_ocr_chat_changed(self, _chat_title: str) -> None:
-        self.message_buffer.clear()
 
     def _on_ocr_error(self, context: str, exc: Exception) -> None:
         text = f"{context}: {type(exc).__name__}: {exc}"

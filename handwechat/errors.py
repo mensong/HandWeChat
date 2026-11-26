@@ -12,3 +12,7 @@ class AttachError(HWError):
 
 class WeChatOfflineError(HWError):
     """微信不在线或已退出登录。"""
+
+
+class OcrBindError(HWError):
+    """启动监听时首帧未能识别当前会话，绑定失败。"""

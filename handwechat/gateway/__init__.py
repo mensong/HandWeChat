@@ -10,7 +10,6 @@ __all__ = [
     "PinInfo",
     "GatewayContext",
     "SendResult",
-    "ChatInfo",
     "Decision",
     "ResponseItem",
     "ResponseImage",
@@ -33,7 +32,6 @@ def __getattr__(name: str):
         "PinInfo",
         "GatewayContext",
         "SendResult",
-        "ChatInfo",
     ):
         from handwechat.gateway import client
 

@@ -53,7 +53,6 @@ class MainWindow(QMainWindow):
         self.controller: Optional[WeChatController] = None
         self.messages: list[BaseMessage] = []
         self._workers: list[FunctionWorker] = []
-        self._active_chat: Optional[str] = None
         self._listener_running = False
         self._ocr_calibrating = False
 
@@ -213,7 +212,6 @@ class MainWindow(QMainWindow):
         if self.controller:
             self.controller.shutdown()
         controller.bridge.message_received.connect(self._on_message_received)
-        controller.bridge.chat_changed.connect(self._on_chat_changed)
         controller.bridge.listener_error.connect(self._on_listener_error)
         controller.bridge.state_changed.connect(self._on_listener_state_changed)
         controller.bridge.send_started.connect(self._on_send_started)
@@ -221,7 +219,6 @@ class MainWindow(QMainWindow):
         self.controller = controller
         self.status_label.setText("微信：在线")
         self._log("微信窗口确认成功，OCR 通道已就绪")
-        self._active_chat = None
         self.active_label.setText("当前聊天：待识别")
         self.messages.clear()
         self._render_messages()
@@ -242,10 +239,27 @@ class MainWindow(QMainWindow):
         if calibration.palette is None:
             self._log("启动监听失败：缺少 OCR 底色标定，请先完成「OCR 区域标定」")
             return
-        try:
-            self.controller.start_listener()
-        except Exception as exc:
-            self._log(f"启动监听失败：{type(exc).__name__}: {exc}")
+        # 启动要等首帧识别出会话名，约 1~2 秒，放到后台线程避免界面卡住。
+        self.start_button.setEnabled(False)
+        self._log("正在绑定当前会话…")
+        self._run_async(
+            self.controller.start_listener,
+            self._on_listener_started,
+            self._on_listener_start_failed,
+        )
+
+    def _on_listener_started(self, _result=None) -> None:
+        self.start_button.setEnabled(True)
+        chat = self.controller.status().get("chat_title") if self.controller else ""
+        self._log(f"监听已启动，当前会话：{chat or '待识别'}")
+        self.messages.clear()
+        self._render_messages()
+        self._refresh_listener_status()
+
+    def _on_listener_start_failed(self, detail: str) -> None:
+        self.start_button.setEnabled(True)
+        self._log(f"启动监听失败：{detail}")
+        self._refresh_listener_status()
 
     def _stop_listener(self) -> None:
         if not self.controller:
@@ -272,7 +286,6 @@ class MainWindow(QMainWindow):
         chat_type = status.get("chat_type") or "未知"
         state = "运行中" if status.get("running") else "未启动"
 
-        self._active_chat = status.get("chat_title") or None
         self.active_label.setText(f"当前聊天：{chat}")
         self.listener_state_label.setText(f"监听状态：{state}")
         self.listener_chat_label.setText(f"当前聊天：{chat}")
@@ -314,12 +327,6 @@ class MainWindow(QMainWindow):
         self._log(f"历史 OCR 消息数已设为 {self.config.history_size}")
 
     # -- 消息 ---------------------------------------------------------------
-    def _on_chat_changed(self, chat_title: str) -> None:
-        self._active_chat = chat_title
-        self.messages.clear()
-        self._log(f"已跟随当前微信聊天：{chat_title}")
-        self._render_messages()
-
     def _on_message_received(self, message: BaseMessage) -> None:
         if self.messages:
             self.messages[-1].is_latest = False

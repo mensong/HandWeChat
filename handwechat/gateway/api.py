@@ -25,7 +25,6 @@ from handwechat.gateway.config import GatewayConfig
 from handwechat.gateway.dispatcher import Dispatcher, GatewayStats
 from handwechat.gateway.hub import AppHub
 from handwechat.gateway.logging_setup import configure_gateway_logging
-from handwechat.gateway.models import now_iso
 from handwechat.gateway.pin import PinManager
 from handwechat.gateway.registry import AppRegistry
 from handwechat.gateway.sends import SendCoordinator
@@ -123,23 +122,20 @@ def create_app(
             health_state["context"] = context
             if previous is None:
                 return
+            # chat_title/chat_type 只在监听启动时绑定，重启换会话后会变；
+            # 一并纳入状态判定，应用从 upstream_state 拿新绑定（不再单独推 chat_changed）。
             if any(
                 previous.get(key) != context.get(key)
-                for key in ("online", "listener_running", "attached", "health_ok")
+                for key in (
+                    "online",
+                    "listener_running",
+                    "attached",
+                    "health_ok",
+                    "chat_title",
+                    "chat_type",
+                )
             ):
                 await hub.broadcast({"type": "upstream_state", **context})
-            if (
-                previous.get("chat_title") != context.get("chat_title")
-                or previous.get("chat_type") != context.get("chat_type")
-            ):
-                await hub.broadcast(
-                    {
-                        "type": "chat_changed",
-                        "chat_title": context["chat_title"],
-                        "chat_type": context["chat_type"],
-                        "occurred_at": now_iso(),
-                    }
-                )
 
         tasks = [
             asyncio.create_task(upstream.run(), name="gateway-upstream"),

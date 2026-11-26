@@ -38,7 +38,6 @@ class ListenerBridge(QObject):
     """Translate OCR callbacks into main-thread Qt signals."""
 
     message_received = Signal(object)
-    chat_changed = Signal(str)
     listener_error = Signal(str, object)
     state_changed = Signal(bool)
     send_started = Signal(str, str)
@@ -46,9 +45,6 @@ class ListenerBridge(QObject):
 
     def emit_message(self, message: BaseMessage) -> None:
         self.message_received.emit(message)
-
-    def emit_chat_changed(self, chat_title: str) -> None:
-        self.chat_changed.emit(chat_title)
 
     def emit_error(self, context: str, exc: Exception) -> None:
         self.listener_error.emit(context, exc)
@@ -95,7 +91,6 @@ class WeChatController(QObject):
             window_maximized=calibration.window_maximized,
             palette=calibration.palette,
             on_message=self.bridge.emit_message,
-            on_chat_changed=self.bridge.emit_chat_changed,
             on_error=self.bridge.emit_error,
             on_send_started=self.bridge.emit_send_started,
             on_send_completed=self.bridge.emit_send_completed,

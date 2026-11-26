@@ -207,7 +207,6 @@ async def consumer(
     observed: list,
     clients: dict,
     send_results: list,
-    chat_changes: list,
     states: list,
     welcomes: dict,
 ) -> None:
@@ -238,7 +237,6 @@ async def consumer(
         on_offer=on_offer,
         on_connected=on_connected,
         on_send_result=send_results.append,
-        on_chat_changed=chat_changes.append,
         on_upstream_state=states.append,
         reconnect_seconds=0.5,
     )
@@ -304,7 +302,6 @@ async def main() -> None:
 
             observed: list[dict] = []
             send_results: list = []
-            chat_changes: list = []
             states: list = []
             welcomes: dict = {}
 
@@ -360,7 +357,6 @@ async def main() -> None:
                         observed,
                         clients,
                         send_results,
-                        chat_changes,
                         states,
                         welcomes,
                     )
@@ -374,7 +370,6 @@ async def main() -> None:
                         observed,
                         clients,
                         send_results,
-                        chat_changes,
                         states,
                         welcomes,
                     )
@@ -388,7 +383,6 @@ async def main() -> None:
                         observed,
                         clients,
                         send_results,
-                        chat_changes,
                         states,
                         welcomes,
                     )
@@ -402,7 +396,6 @@ async def main() -> None:
                         observed,
                         clients,
                         send_results,
-                        chat_changes,
                         states,
                         welcomes,
                     )
@@ -516,13 +509,13 @@ async def main() -> None:
 
             upstream.health["chat_title"] = "群聊B"
             upstream.health["listener_running"] = False
+            # 会话名随 upstream_state 一起推送，不再有独立的 chat_changed 事件。
             await wait_until(
-                lambda: any(change.chat_title == "群聊B" for change in chat_changes),
-                "聊天切换推送",
-            )
-            await wait_until(
-                lambda: any(state.listener_running is False for state in states),
-                "监听状态推送",
+                lambda: any(
+                    state.chat_title == "群聊B" and state.listener_running is False
+                    for state in states
+                ),
+                "聊天绑定与监听状态推送",
             )
             health = await asyncio.to_thread(
                 _get_json,

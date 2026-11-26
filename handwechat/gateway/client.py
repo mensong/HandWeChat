@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 import inspect
 import json
 import logging
@@ -136,22 +136,6 @@ class GatewayContext:
 
 
 @dataclass(frozen=True)
-class ChatInfo:
-    chat_title: str = ""
-    chat_type: Optional[str] = None
-    occurred_at: Optional[str] = None
-
-    @classmethod
-    def from_payload(cls, payload: dict) -> "ChatInfo":
-        data = payload if isinstance(payload, dict) else {}
-        return cls(
-            chat_title=str(data.get("chat_title") or ""),
-            chat_type=data.get("chat_type"),
-            occurred_at=data.get("occurred_at"),
-        )
-
-
-@dataclass(frozen=True)
 class SendResult:
     """网关代发的回执：final=False 是入队结果，final=True 是最终结果。"""
 
@@ -186,7 +170,6 @@ class SendResult:
 
 
 SendResultHandler = Callable[[SendResult], Any]
-ChatHandler = Callable[[ChatInfo], Any]
 StateHandler = Callable[[GatewayContext], Any]
 
 
@@ -208,7 +191,6 @@ class GatewayClient:
         on_pin_expired: Optional[PinHandler] = None,
         on_connected: Optional[ConnectHandler] = None,
         on_send_result: Optional[SendResultHandler] = None,
-        on_chat_changed: Optional[ChatHandler] = None,
         on_upstream_state: Optional[StateHandler] = None,
         reconnect_seconds: float = 3.0,
         handshake_timeout: float = 10.0,
@@ -222,7 +204,6 @@ class GatewayClient:
         self.on_pin_expired = on_pin_expired
         self.on_connected = on_connected
         self.on_send_result = on_send_result
-        self.on_chat_changed = on_chat_changed
         self.on_upstream_state = on_upstream_state
         self.reconnect_seconds = max(0.5, float(reconnect_seconds))
         self.handshake_timeout = max(1.0, float(handshake_timeout))
@@ -350,15 +331,6 @@ class GatewayClient:
             await _maybe_await(
                 self.on_send_result, SendResult.from_payload(payload)
             )
-        elif kind == "chat_changed":
-            info = ChatInfo.from_payload(payload)
-            if self.context is not None:
-                self.context = replace(
-                    self.context,
-                    chat_title=info.chat_title,
-                    chat_type=info.chat_type,
-                )
-            await _maybe_await(self.on_chat_changed, info)
         elif kind == "upstream_state":
             context = GatewayContext.from_payload(payload)
             self.context = context

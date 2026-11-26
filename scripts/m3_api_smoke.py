@@ -66,9 +66,6 @@ class FakeOcrChannel:
     def emit_message(self, message) -> None:
         self.kwargs["on_message"](message)
 
-    def emit_chat_changed(self, title: str) -> None:
-        self.kwargs["on_chat_changed"](title)
-
     def emit_error(self, context: str, exc: Exception) -> None:
         self.kwargs["on_error"](context, exc)
 
@@ -171,7 +168,14 @@ def main() -> None:
             assert payload["has_more"] is False
             assert payload["next_cursor"] == 2
 
-            channel.emit_chat_changed("group")
+            # 一次启动绑定一个会话：重启监听不能带出上个会话的消息。
+            stopped_mid = client.post("/api/v1/listener/stop")
+            assert stopped_mid.status_code == 200, stopped_mid.text
+            restarted_mid = client.post("/api/v1/listener/start")
+            assert restarted_mid.status_code == 200, restarted_mid.text
+            assert len(channels) == 2
+            channel = channels[1]
+
             cleared = client.get("/api/v1/messages?cursor=0&limit=100&timeout=0")
             assert cleared.status_code == 200, cleared.text
             assert cleared.json()["items"] == []
@@ -179,7 +183,7 @@ def main() -> None:
             channel.emit_message(
                 TextMessage(
                     sender="bob",
-                    content="after switch",
+                    content="after restart",
                     attr=MessageAttr.FRIEND,
                     type=MessageType.TEXT,
                     index=4,
@@ -206,8 +210,8 @@ def main() -> None:
 
             restarted = client.post("/api/v1/listener/start")
             assert restarted.status_code == 200, restarted.text
-            assert len(channels) == 2
-            assert channels[1].running is True
+            assert len(channels) == 3
+            assert channels[2].running is True
 
             attach = client.post("/api/v1/attach")
             assert attach.status_code == 200, attach.text

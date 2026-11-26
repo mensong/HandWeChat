@@ -60,7 +60,7 @@ from handwechat.api.service import (
     OcrChannelNotRunningError,
     SendTaskNotFoundError,
 )
-from handwechat.errors import AttachError, HWError, WeChatOfflineError
+from handwechat.errors import AttachError, HWError, OcrBindError, WeChatOfflineError
 from handwechat.paths import app_data_path, app_path, resource_path
 from handwechat.sending import MAX_IMAGE_BYTES
 from handwechat.version import __version__
@@ -78,6 +78,8 @@ def _error_code(exc: Exception) -> str:
         return "SEND_TASK_NOT_FOUND"
     if isinstance(exc, OcrChannelNotRunningError):
         return "OCR_CHANNEL_NOT_RUNNING"
+    if isinstance(exc, OcrBindError):
+        return "OCR_CHAT_UNBOUND"
     if isinstance(exc, LogNotFoundError):
         return "LOG_NOT_FOUND"
     return "INTERNAL_ERROR"

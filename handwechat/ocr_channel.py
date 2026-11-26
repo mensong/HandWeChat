@@ -22,7 +22,7 @@ from typing import Callable, Optional, Sequence
 import numpy as np
 from PIL import Image, ImageGrab
 
-from handwechat.errors import HWError
+from handwechat.errors import HWError, OcrBindError
 from handwechat.mentions import split_mentions
 from handwechat.models import (
     BaseMessage,
@@ -42,7 +42,6 @@ from handwechat.sending import SendPayload
 SendCompletedCallback = Callable[[str, str, bool, str], None]
 SendStartedCallback = Callable[[str, str], None]
 MessageCallback = Callable[[BaseMessage], None]
-ChatChangedCallback = Callable[[str], None]
 ErrorCallback = Callable[[str, Exception], None]
 
 logger = logging.getLogger("handwechat.ocr")
@@ -51,6 +50,8 @@ _MENTION_PICKER_DELAY = 0.3
 _MENTION_FILTER_DELAY = 0.5
 _MENTION_SELECT_DELAY = 0.2
 _IMAGE_PREVIEW_DELAY = 1.0
+# 首帧要等 Paddle 完成一次推理，留足余量。
+_FIRST_FRAME_TIMEOUT = 10.0
 # 发送结束后等 UI 稳定（浮层收起、气泡动画）再恢复截图。
 _SEND_SETTLE_DELAY = 0.5
 
@@ -339,21 +340,21 @@ def _confidence_for(repeats: int) -> float:
 
 def _frame_signature(
     image: Image.Image,
-    title_box: tuple[int, int, int, int],
     chat_box: tuple[int, int, int, int],
 ) -> str:
-    """Hash only the regions that are fed into OCR.
+    """Hash only the region that is fed into OCR.
 
     The hash covers pixels instead of a timestamp or window position, so moving
     the window does not trigger OCR again when the visible content is unchanged.
+    The title strip is left out: it is read once per listener start, and its
+    member/unread counters change without anything new to recognize.
     """
 
     digest = hashlib.sha256()
     digest.update(f"{image.mode}:{image.width}x{image.height}".encode("ascii"))
-    for box in (title_box, chat_box):
-        crop = image.crop(box)
-        digest.update(str(crop.size).encode("ascii"))
-        digest.update(crop.tobytes())
+    crop = image.crop(chat_box)
+    digest.update(str(crop.size).encode("ascii"))
+    digest.update(crop.tobytes())
     return digest.hexdigest()
 
 
@@ -932,7 +933,6 @@ class OcrChannel:
         palette: Optional[OcrPalette] = None,
         bg_probe_offset: int = _BG_PROBE_OFFSET,
         on_message: Optional[MessageCallback] = None,
-        on_chat_changed: Optional[ChatChangedCallback] = None,
         on_error: Optional[ErrorCallback] = None,
         on_send_started: Optional[SendStartedCallback] = None,
         on_send_completed: Optional[SendCompletedCallback] = None,
@@ -964,12 +964,9 @@ class OcrChannel:
         self._ocr_thread: Optional[threading.Thread] = None
         self._parse_thread: Optional[threading.Thread] = None
         self._message_callbacks: list[MessageCallback] = []
-        self._chat_changed_callbacks: list[ChatChangedCallback] = []
         self._error_callbacks: list[ErrorCallback] = []
         if on_message:
             self._message_callbacks.append(on_message)
-        if on_chat_changed:
-            self._chat_changed_callbacks.append(on_chat_changed)
         if on_error:
             self._error_callbacks.append(on_error)
 
@@ -978,6 +975,10 @@ class OcrChannel:
         self._last_error: Optional[str] = None
         self._chat_title = ""
         self._chat_type: Optional[str] = None
+        # 会话标题只在一次启动的首帧识别一次，之后不再读标题区。
+        self._title_pending = True
+        self._first_frame_ready = threading.Event()
+        self._first_frame_error = ""
         self._last_frame_signature: Optional[str] = None
         self._last_accepted_signature: Optional[str] = None
         self._ocr_skip_identical_count = 0
@@ -1116,6 +1117,16 @@ class OcrChannel:
             self._prev_signatures = ()
             self._history.clear()
 
+        with self._status_lock:
+            self._chat_title = ""
+            self._chat_type = None
+            self._title_pending = True
+            self._first_frame_error = ""
+            # 上次监听的截图签名不能沿用，否则首帧会被当成重复帧跳过、绑定永远等不到。
+            self._last_accepted_signature = None
+            self._last_frame_signature = None
+        self._first_frame_ready.clear()
+
         self._stop_event.clear()
         self._running = True
         self._capture_thread = threading.Thread(
@@ -1138,6 +1149,19 @@ class OcrChannel:
         self._parse_thread.start()
         self.send_queue.start()
 
+        # 一次启动绑定一个会话：等首帧给出标题，识别不到就整体回滚。
+        if not self._first_frame_ready.wait(_FIRST_FRAME_TIMEOUT):
+            self.stop(timeout=4.0)
+            raise OcrBindError(
+                "启动监听超时：首帧未能完成，无法确定当前会话"
+            )
+        if self._first_frame_error:
+            detail = self._first_frame_error
+            self.stop(timeout=4.0)
+            raise OcrBindError(detail)
+        if self._stop_event.is_set():
+            raise OcrBindError("启动监听期间收到停止请求，未绑定会话")
+
     def stop(self, timeout: float = 4.0) -> None:
         self._stop_event.set()
         self._running = False
@@ -1145,6 +1169,12 @@ class OcrChannel:
         for thread in (self._capture_thread, self._ocr_thread, self._parse_thread):
             if thread and thread.is_alive() and thread is not threading.current_thread():
                 thread.join(timeout)
+        with self._status_lock:
+            self._chat_title = ""
+            self._chat_type = None
+            self._title_pending = True
+        # 释放仍在等首帧的 start()。
+        self._first_frame_ready.set()
         self._save_state()
 
     def send(self, payload: SendPayload, *, task_id: str) -> None:
@@ -1195,9 +1225,11 @@ class OcrChannel:
             located = _find_wechat_window()
         except Exception as exc:
             self._report_error("OCR 窗口定位", exc)
+            self._fail_pending_bind("启动监听失败：无法定位微信主窗口")
             return
         if located is None:
             self._set_status_error("未找到微信主窗口")
+            self._fail_pending_bind("启动监听失败：未找到微信主窗口")
             return
         hwnd, (left, top, right, bottom) = located
         try:
@@ -1205,12 +1237,14 @@ class OcrChannel:
                 located = _find_wechat_window()
                 if located is None:
                     self._set_status_error("恢复窗口尺寸后未找到微信主窗口")
+                    self._fail_pending_bind("启动监听失败：恢复窗口尺寸后未找到微信主窗口")
                     return
                 hwnd, (left, top, right, bottom) = located
         except Exception as exc:
             self._report_error("OCR 恢复窗口尺寸", exc)
         if right <= left or bottom <= top:
             self._set_status_error("微信窗口尺寸无效")
+            self._fail_pending_bind("启动监听失败：微信窗口尺寸无效")
             return
         try:
             temporary_topmost = self._bring_window_to_front(hwnd)
@@ -1222,13 +1256,6 @@ class OcrChannel:
                 if temporary_topmost:
                     self._release_window_front(hwnd)
             width, height = image.size
-            title_box = _crop_box(
-                (width, height),
-                left=self.title_box[0],
-                top=self.title_box[1],
-                right=self.title_box[2],
-                bottom=self.title_box[3],
-            )
             chat_box = _crop_box(
                 (width, height),
                 left=self.chat_box[0],
@@ -1236,7 +1263,7 @@ class OcrChannel:
                 right=self.chat_box[2],
                 bottom=self.chat_box[3],
             )
-            signature = _frame_signature(image, title_box, chat_box)
+            signature = _frame_signature(image, chat_box)
             self._set_last_frame_signature(signature)
             if signature == self._last_accepted_signature:
                 self._increment_ocr_skip_count()
@@ -1276,6 +1303,7 @@ class OcrChannel:
                 self._parse_queue.put(parsed)
             except Exception as exc:
                 self._report_error("OCR 解析", exc)
+                self._fail_pending_bind("启动监听失败：首帧 OCR 解析异常")
 
     def _parse_loop(self) -> None:
         while not self._stop_event.is_set():
@@ -1290,17 +1318,17 @@ class OcrChannel:
 
     def _read_frame(self, frame: CapturedFrame) -> ParsedFrame:
         width, height = frame.image.size
-        title_box = _crop_box((width, height), left=self.title_box[0], top=self.title_box[1], right=self.title_box[2], bottom=self.title_box[3])
         chat_box = _crop_box((width, height), left=self.chat_box[0], top=self.chat_box[1], right=self.chat_box[2], bottom=self.chat_box[3])
-        title_lines = self._reader.recognize_lines(frame.image.crop(title_box))
+        # 会话标题只在启动首帧识别一次；同一次监听内不再读标题区。
+        chat_title = ""
+        if self._title_pending:
+            title_box = _crop_box((width, height), left=self.title_box[0], top=self.title_box[1], right=self.title_box[2], bottom=self.title_box[3])
+            title_lines = self._reader.recognize_lines(frame.image.crop(title_box))
+            chat_title = self._select_title(title_lines)
         started_at = time.perf_counter()
         chat_image = frame.image.crop(chat_box)
         chat_lines = self._reader.recognize_lines(chat_image)
         ocr_ms = (time.perf_counter() - started_at) * 1000
-        chat_title = self._select_title(title_lines)
-        # Every current chat is parsed with the group layout, because OCR has
-        # no reliable signal for whether a private chat will show sender rows.
-        chat_type = "group" if chat_title else None
         messages, stats = self._parse_chat_lines(
             chat_lines,
             width=chat_box[2] - chat_box[0],
@@ -1328,6 +1356,16 @@ class OcrChannel:
     def _increment_ocr_skip_count(self) -> None:
         with self._status_lock:
             self._ocr_skip_identical_count += 1
+
+    def _fail_pending_bind(self, message: str) -> None:
+        """首帧失败时立即结束启动等待；会话只绑定一次，不重试。"""
+
+        with self._status_lock:
+            if not self._title_pending:
+                return
+            self._title_pending = False
+            self._first_frame_error = message
+        self._first_frame_ready.set()
 
     def _select_title(self, lines: Sequence[OcrLine]) -> str:
         if not lines:
@@ -1888,31 +1926,30 @@ class OcrChannel:
         emitted: list[tuple[int, OcrMessage, float, int, bool]] = []
 
         with self._status_lock:
-            previous_title = self._chat_title
-            if frame.chat_title:
-                self._chat_title = frame.chat_title
-                self._chat_type = "group"
-            title_changed = bool(frame.chat_title) and (
-                self._chat_title != previous_title
-            )
+            bind_title = self._title_pending
+            if bind_title:
+                if frame.chat_title:
+                    self._chat_title = frame.chat_title
+                    self._chat_type = "group"
+                    self._first_frame_error = ""
+                else:
+                    self._first_frame_error = (
+                        "启动监听失败：未能从标题栏识别当前会话，请先打开目标会话再重试"
+                    )
+                self._title_pending = False
 
-        if title_changed:
-            self._emit_chat_changed(frame.chat_title)
+        if bind_title:
+            self._first_frame_ready.set()
 
         with self._state_lock:
             previous_anchor_len = len(self._prev_signatures)
-            if title_changed:
-                self._baseline_ready = False
-                self._last_signature = ""
-                self._prev_signatures = ()
-                self._history.clear()
 
             if incoming:
                 signatures = tuple(
                     _message_signature(message) for message in messages
                 )
                 if not self._baseline_ready:
-                    # First frame after start or a chat switch is the baseline.
+                    # The first frame of every listener start is the baseline.
                     self._baseline_ready = True
                     self._prev_signatures = signatures
                     self._last_signature = _message_signature(incoming[-1])
@@ -2075,13 +2112,6 @@ class OcrChannel:
                 callback(message)
             except Exception as exc:
                 self._report_error("OCR 消息回调", exc)
-
-    def _emit_chat_changed(self, chat_title: str) -> None:
-        for callback in tuple(self._chat_changed_callbacks):
-            try:
-                callback(chat_title)
-            except Exception as exc:
-                self._report_error("OCR 聊天切换回调", exc)
 
     def _report_error(self, context: str, exc: Exception) -> None:
         text = f"{context}: {type(exc).__name__}: {exc}"
