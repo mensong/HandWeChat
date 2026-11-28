@@ -9,6 +9,7 @@ from dataclasses import asdict
 from datetime import datetime
 import json
 import logging
+import time
 from pathlib import Path
 
 from fastapi import FastAPI, WebSocket
@@ -143,6 +144,9 @@ def create_app(
             asyncio.create_task(
                 upstream.poll_health(config.health_poll_seconds, _on_health),
                 name="gateway-health",
+            ),
+            asyncio.create_task(
+                _watch_loop_lag(), name="gateway-loop-lag"
             ),
         ]
         if watch_state is not None:
@@ -416,3 +420,22 @@ def _mtime(path: Path) -> float:
         return path.stat().st_mtime
     except OSError:
         return 0.0
+
+
+async def _watch_loop_lag(
+    interval: float = 5.0, threshold: float = 5.0
+) -> None:
+    """事件循环卡顿看门狗：定时器迟到就记录，区分进程卡顿与宿主停顿。"""
+
+    while True:
+        started = time.monotonic()
+        await asyncio.sleep(interval)
+        lag = time.monotonic() - started - interval
+        if lag > threshold:
+            logger.warning(
+                json.dumps(
+                    {"event": "loop_lag", "lag_ms": round(lag * 1000.0)},
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+            )

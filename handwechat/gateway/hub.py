@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 import uuid
 
 from fastapi import WebSocket
@@ -28,6 +29,8 @@ from handwechat.gateway.rules import RuleError, parse_hello_rules
 logger = logging.getLogger("handwechat.gateway")
 
 _MAX_PENDING_EVENTS = 20
+_MAX_UNANSWERED_OFFERS = 3
+_MAX_SEND_SECONDS = 5.0
 
 
 class AppConnection:
@@ -36,14 +39,24 @@ class AppConnection:
         self.websocket = websocket
         self.closed = False
         self.heartbeat_task: asyncio.Task | None = None
+        self.opened_at = time.monotonic()
+        # 只有客户端回过 pong 才按 pong 判活，兼容忽略 ping 的旧客户端。
+        self.last_pong: float | None = None
+        self.unanswered = 0
         self._send_lock = asyncio.Lock()
         self._pending: dict[str, asyncio.Future] = {}
 
-    async def send_json(self, payload: dict) -> None:
+    async def send_json(
+        self, payload: dict, *, timeout: float | None = None
+    ) -> None:
         if self.closed:
             raise ConnectionError("应用连接已关闭")
         async with self._send_lock:
-            await self.websocket.send_json(payload)
+            sending = self.websocket.send_json(payload)
+            if timeout is None:
+                await sending
+            else:
+                await asyncio.wait_for(sending, timeout=max(0.5, float(timeout)))
 
     def expect(self, offer_id: str) -> asyncio.Future:
         future = asyncio.get_running_loop().create_future()
@@ -112,6 +125,8 @@ class AppHub:
     async def handle(self, websocket: WebSocket) -> None:
         await websocket.accept()
         connection: AppConnection | None = None
+        close_code: int | None = None
+        close_reason = ""
         try:
             raw = await asyncio.wait_for(websocket.receive_text(), timeout=10.0)
             try:
@@ -136,6 +151,7 @@ class AppHub:
             if old is not None:
                 old.cancel_heartbeat()
                 old.fail_pending()
+                self._log_connection("app_replaced", old)
                 await old.close(code=4009, reason="连接已被新连接替换")
 
             connection = AppConnection(app_id, websocket)
@@ -144,6 +160,7 @@ class AppHub:
             if runtime is not None:
                 runtime.hello_rules = rules
                 runtime.connection = connection
+            self._log_connection("app_connected", connection)
 
             pin = self._pins.pin
             await connection.send_json(
@@ -164,19 +181,31 @@ class AppHub:
                 )
 
             await self._receive_loop(connection)
-        except (WebSocketDisconnect, asyncio.CancelledError):
-            pass
+        except WebSocketDisconnect as exc:
+            close_code = exc.code
+            close_reason = exc.reason or ""
+        except asyncio.CancelledError:
+            close_reason = "服务停止"
         except Exception as exc:
+            close_reason = f"{type(exc).__name__}: {exc}"
             logger.warning("应用 WS 连接异常：%s: %s", type(exc).__name__, exc)
         finally:
             if connection is not None:
+                was_current = self._connections.get(connection.app_id) is connection
                 connection.cancel_heartbeat()
                 connection.fail_pending()
-                if self._connections.get(connection.app_id) is connection:
+                if was_current:
                     self._connections.pop(connection.app_id, None)
                 runtime = self._registry.get(connection.app_id)
                 if runtime is not None and runtime.connection is connection:
                     runtime.connection = None
+                self._log_connection(
+                    "app_disconnected",
+                    connection,
+                    code=close_code,
+                    reason=close_reason,
+                    current=was_current,
+                )
 
     async def offer(
         self,
@@ -205,21 +234,35 @@ class AppHub:
                     "pin": pin.to_payload() if pin is not None else None,
                     "message": message.to_payload(),
                     "response": response,
-                }
+                },
+                timeout=min(_MAX_SEND_SECONDS, max(1.0, timeout_s)),
             )
         except Exception as exc:
             connection.drop(offer_id)
+            self._drop_connection(connection, code=4008, reason="推送失败")
             raise OfferUnavailable(f"{app.id} 推送失败：{exc}") from exc
 
         try:
             decision = await asyncio.wait_for(future, timeout=timeout_s)
         except asyncio.TimeoutError:
+            # 只有用满该应用配置的超时才算「未响应」，被单轮 deadline
+            # 截断的超时不计数，避免把慢但对的应用误判掉。
+            full_timeout = (
+                app.config.timeout_ms
+                or self._registry.config.default_offer_timeout_ms
+            ) / 1000.0
+            if timeout_s >= full_timeout - 1e-6:
+                connection.unanswered += 1
+                if connection.unanswered >= _MAX_UNANSWERED_OFFERS:
+                    # 连接看着在线却连续不回，断开让客户端重连自愈。
+                    self._drop_connection(connection, code=4008, reason="连续未响应")
             raise OfferTimeout(f"{app.id} 超过 {int(timeout_s * 1000)}ms 未返回") from None
         finally:
             connection.drop(offer_id)
 
         if decision is None:
             raise OfferUnavailable(f"{app.id} 连接在等待中关闭")
+        connection.unanswered = 0
         return decision, offer_id
 
     async def send_pin_expired(self, pin: PinState) -> None:
@@ -256,6 +299,7 @@ class AppHub:
             return
         connection.cancel_heartbeat()
         connection.fail_pending()
+        self._log_connection("app_closed", connection, reason="应用已从配置移除")
         await connection.close(code=4001, reason="应用已从配置移除")
         runtime = self._registry.get(app_id)
         if runtime is not None and runtime.connection is connection:
@@ -307,6 +351,8 @@ class AppHub:
                         )
                     )
             elif kind in ("ping", "pong"):
+                if kind == "pong":
+                    connection.last_pong = time.monotonic()
                 continue
             else:
                 logger.debug(
@@ -315,14 +361,69 @@ class AppHub:
 
     async def _heartbeat(self, connection: AppConnection) -> None:
         while not connection.closed:
-            interval = max(5.0, self._config.heartbeat_seconds)
+            interval = max(1.0, self._config.heartbeat_seconds)
             await asyncio.sleep(interval)
             if connection.closed:
                 return
-            try:
-                await connection.send_json({"type": "ping", "ts": now_iso()})
-            except Exception:
+            if (
+                connection.last_pong is not None
+                and time.monotonic() - connection.last_pong > interval * 2 + 5.0
+            ):
+                self._drop_connection(connection, code=4008, reason="心跳无响应")
                 return
+            try:
+                await connection.send_json(
+                    {"type": "ping", "ts": now_iso()},
+                    timeout=max(_MAX_SEND_SECONDS, interval),
+                )
+            except Exception as exc:
+                logger.warning("应用 %s 心跳发送失败：%s", connection.app_id, exc)
+                self._drop_connection(connection, code=4008, reason="心跳发送失败")
+                return
+
+    def _drop_connection(
+        self, connection: AppConnection, *, code: int, reason: str
+    ) -> None:
+        """立即摘除连接，关闭握手放到后台，避免拖住调度协程。"""
+
+        if self._connections.get(connection.app_id) is connection:
+            self._connections.pop(connection.app_id, None)
+        runtime = self._registry.get(connection.app_id)
+        if runtime is not None and runtime.connection is connection:
+            runtime.connection = None
+        if connection.heartbeat_task is asyncio.current_task():
+            connection.heartbeat_task = None
+        else:
+            connection.cancel_heartbeat()
+        connection.fail_pending()
+        self._log_connection("app_dropped", connection, code=code, reason=reason)
+        asyncio.create_task(self._close_quietly(connection, code, reason))
+
+    @staticmethod
+    async def _close_quietly(
+        connection: AppConnection, code: int, reason: str
+    ) -> None:
+        try:
+            await asyncio.wait_for(
+                connection.close(code=code, reason=reason),
+                timeout=_MAX_SEND_SECONDS,
+            )
+        except Exception:
+            pass
+
+    @staticmethod
+    def _log_connection(
+        event: str, connection: AppConnection, **extra
+    ) -> None:
+        payload = {
+            "event": event,
+            "app_id": connection.app_id,
+            "seconds": round(time.monotonic() - connection.opened_at, 1),
+            **extra,
+        }
+        logger.info(
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        )
 
     async def _send_from_app(
         self,

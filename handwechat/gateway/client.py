@@ -5,10 +5,11 @@ from __future__ import annotations
 
 import asyncio
 import base64
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import inspect
 import json
 import logging
+import time
 from typing import Any, Callable, Optional
 
 import websockets
@@ -23,11 +24,12 @@ from .protocol import (
 DEFAULT_URL = "ws://127.0.0.1:8100/api/v1/gateway/ws/app"
 
 _TERMINAL_CLOSE_CODES = {
-    4009: "连接被同一应用的新连接替换",
     4400: "握手帧非法或协议版本不匹配",
     4401: "token 不匹配",
     4404: "应用未注册或已禁用",
 }
+
+_DEFAULT_OFFER_QUEUE = 100
 
 
 class GatewayClientError(Exception):
@@ -136,6 +138,22 @@ class GatewayContext:
 
 
 @dataclass(frozen=True)
+class ChatInfo:
+    chat_title: str = ""
+    chat_type: Optional[str] = None
+    occurred_at: Optional[str] = None
+
+    @classmethod
+    def from_payload(cls, payload: dict) -> "ChatInfo":
+        data = payload if isinstance(payload, dict) else {}
+        return cls(
+            chat_title=str(data.get("chat_title") or ""),
+            chat_type=data.get("chat_type"),
+            occurred_at=data.get("occurred_at"),
+        )
+
+
+@dataclass(frozen=True)
 class SendResult:
     """网关代发的回执：final=False 是入队结果，final=True 是最终结果。"""
 
@@ -170,6 +188,7 @@ class SendResult:
 
 
 SendResultHandler = Callable[[SendResult], Any]
+ChatHandler = Callable[[ChatInfo], Any]
 StateHandler = Callable[[GatewayContext], Any]
 
 
@@ -178,6 +197,9 @@ class GatewayClient:
 
     on_offer 可以返回 Decision、dict 或 None；None 和异常都按无改动
     rewrite 处理，保证一个处理失误不会让整条链路卡住。
+
+    on_offer 在独立的消费任务里执行，不会堵住收帧循环；已经超过网关
+    deadline 的 offer 直接回 rewrite，不调用 on_offer。
     """
 
     def __init__(
@@ -191,9 +213,13 @@ class GatewayClient:
         on_pin_expired: Optional[PinHandler] = None,
         on_connected: Optional[ConnectHandler] = None,
         on_send_result: Optional[SendResultHandler] = None,
+        on_chat_changed: Optional[ChatHandler] = None,
         on_upstream_state: Optional[StateHandler] = None,
         reconnect_seconds: float = 3.0,
         handshake_timeout: float = 10.0,
+        ping_interval: Optional[float] = 20.0,
+        ping_timeout: Optional[float] = 20.0,
+        offer_queue_size: int = _DEFAULT_OFFER_QUEUE,
         logger: Optional[logging.Logger] = None,
     ) -> None:
         self.app_id = app_id
@@ -204,15 +230,20 @@ class GatewayClient:
         self.on_pin_expired = on_pin_expired
         self.on_connected = on_connected
         self.on_send_result = on_send_result
+        self.on_chat_changed = on_chat_changed
         self.on_upstream_state = on_upstream_state
         self.reconnect_seconds = max(0.5, float(reconnect_seconds))
         self.handshake_timeout = max(1.0, float(handshake_timeout))
+        self.ping_interval = ping_interval
+        self.ping_timeout = ping_timeout
+        self.offer_queue_size = max(1, int(offer_queue_size))
         self.logger = logger or logging.getLogger("handwechat.gateway.client")
 
         self.connected = False
         self.pin: Optional[PinInfo] = None
         self.context: Optional[GatewayContext] = None
         self._socket = None
+        self._offers: Optional[asyncio.Queue] = None
         self._stopped = False
         self._send_lock = asyncio.Lock()
 
@@ -231,7 +262,9 @@ class GatewayClient:
                 reason = _TERMINAL_CLOSE_CODES.get(code)
                 if reason is not None:
                     raise GatewayAuthError(f"{reason}（close={code}）") from exc
-                self.logger.warning("网关连接关闭（close=%s），准备重连", code)
+                self.logger.warning(
+                    "网关连接关闭（%s），准备重连", _close_detail(exc)
+                )
             except Exception as exc:
                 self.logger.warning(
                     "网关连接异常：%s: %s", type(exc).__name__, exc
@@ -246,6 +279,7 @@ class GatewayClient:
 
     async def stop(self) -> None:
         self._stopped = True
+        self.discard_pending_offers()
         socket = self._socket
         if socket is not None:
             try:
@@ -278,8 +312,8 @@ class GatewayClient:
     async def _connect_once(self) -> None:
         async with websockets.connect(
             self.url,
-            ping_interval=20,
-            ping_timeout=20,
+            ping_interval=self.ping_interval,
+            ping_timeout=self.ping_timeout,
             max_size=None,
             open_timeout=self.handshake_timeout,
         ) as socket:
@@ -312,8 +346,57 @@ class GatewayClient:
             self.context = GatewayContext.from_payload(first.get("context") or {})
             await _maybe_await(self.on_connected, self.pin)
 
-            async for raw in socket:
-                await self._handle_raw(raw)
+            self._offers = asyncio.Queue(maxsize=self.offer_queue_size)
+            tasks = (
+                asyncio.create_task(
+                    self._receive_loop(socket), name="gateway-receive"
+                ),
+                asyncio.create_task(
+                    self._offer_worker(), name="gateway-offers"
+                ),
+            )
+            try:
+                done, pending = await asyncio.wait(
+                    set(tasks), return_when=asyncio.FIRST_COMPLETED
+                )
+                for task in pending:
+                    task.cancel()
+                await asyncio.gather(*pending, return_exceptions=True)
+                for task in done:
+                    if task.cancelled():
+                        continue
+                    error = task.exception()
+                    if error is not None:
+                        raise error
+                self.logger.warning("网关连接已结束，准备重连")
+            except asyncio.CancelledError:
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+                raise
+            finally:
+                self.discard_pending_offers()
+
+    async def _receive_loop(self, socket) -> None:
+        async for raw in socket:
+            await self._handle_raw(raw)
+
+    def discard_pending_offers(self) -> None:
+        """丢弃积压的 offer，供 stop() 或断线时清理。"""
+
+        queue = self._offers
+        self._offers = None
+        if queue is None:
+            return
+        dropped = 0
+        while True:
+            try:
+                queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            dropped += 1
+        if dropped:
+            self.logger.warning("断开前丢弃 %d 条未处理 offer", dropped)
 
     async def _handle_raw(self, raw) -> None:
         try:
@@ -326,15 +409,36 @@ class GatewayClient:
 
         kind = payload.get("type")
         if kind == "offer":
-            await self._handle_offer(payload)
+            self._enqueue_offer(payload)
         elif kind == "send_result":
             await _maybe_await(
                 self.on_send_result, SendResult.from_payload(payload)
             )
         elif kind == "upstream_state":
+            previous = self.context
             context = GatewayContext.from_payload(payload)
             self.context = context
+            if previous is not None and (
+                previous.chat_title != context.chat_title
+                or previous.chat_type != context.chat_type
+            ):
+                await _maybe_await(
+                    self.on_chat_changed,
+                    ChatInfo(
+                        chat_title=context.chat_title,
+                        chat_type=context.chat_type,
+                    ),
+                )
             await _maybe_await(self.on_upstream_state, context)
+        elif kind == "chat_changed":
+            info = ChatInfo.from_payload(payload)
+            if self.context is not None:
+                self.context = replace(
+                    self.context,
+                    chat_title=info.chat_title,
+                    chat_type=info.chat_type,
+                )
+            await _maybe_await(self.on_chat_changed, info)
         elif kind == "pin_expired":
             pin = _pin_from(payload)
             self.pin = None
@@ -348,8 +452,42 @@ class GatewayClient:
         elif kind == "welcome":
             self.pin = _pin_from(payload.get("pin"))
 
-    async def _handle_offer(self, payload: dict) -> None:
+    def _enqueue_offer(self, payload: dict) -> None:
         offer = Offer.from_payload(payload)
+        queue = self._offers
+        if queue is None:
+            return
+        try:
+            queue.put_nowait((offer, time.monotonic()))
+        except asyncio.QueueFull:
+            self.logger.warning(
+                "offer 积压已满（%d 条），丢弃 offer_id=%s 并回 rewrite",
+                queue.maxsize,
+                offer.offer_id,
+            )
+            asyncio.create_task(self._drop_offer(offer))
+
+    async def _drop_offer(self, offer: Offer) -> None:
+        try:
+            await self._reply_decision(offer, Decision.rewrite())
+        except Exception as exc:
+            self.logger.debug("丢弃 offer 后回 rewrite 失败：%s", exc)
+
+    async def _offer_worker(self) -> None:
+        queue = self._offers
+        if queue is None:
+            return
+        while True:
+            offer, received_at = await queue.get()
+            if offer.deadline_ms > 0 and (
+                time.monotonic() - received_at
+            ) * 1000.0 > offer.deadline_ms:
+                # 网关早已判超时，继续算只会让应用越落越远。
+                await self._reply_decision(offer, Decision.rewrite())
+                continue
+            await self._handle_offer(offer)
+
+    async def _handle_offer(self, offer: Offer) -> None:
         decision = Decision.rewrite()
         try:
             result = None
@@ -367,6 +505,9 @@ class GatewayClient:
             self.logger.exception("处理 offer 失败，按无改动 rewrite 返回")
             decision = Decision.rewrite()
 
+        await self._reply_decision(offer, decision)
+
+    async def _reply_decision(self, offer: Offer, decision: Decision) -> None:
         await self._send(
             {
                 "type": "decision",
@@ -409,3 +550,19 @@ def _pin_from(payload) -> Optional[PinInfo]:
 def _close_code(exc: ConnectionClosed) -> Optional[int]:
     received = getattr(exc, "rcvd", None)
     return getattr(received, "code", None)
+
+
+def _close_detail(exc: ConnectionClosed) -> str:
+    """把收到和发出的关闭帧都写出来，便于定位断线原因。"""
+
+    parts = []
+    frames = (
+        ("rcvd", getattr(exc, "rcvd", None)),
+        ("sent", getattr(exc, "sent", None)),
+    )
+    for label, frame in frames:
+        if frame is None:
+            continue
+        reason = str(getattr(frame, "reason", "") or "").strip()
+        parts.append(f"{label}={getattr(frame, 'code', None)} {reason}".strip())
+    return "; ".join(parts) or "无关闭帧"
